@@ -1,0 +1,4999 @@
+# Impostor de Futbolistas — MVP web multijugador
+
+Este canvas contiene una **primera versión completa y jugable del proyecto** en formato de archivos listos para copiar a un proyecto local.
+
+Alcance de esta versión:
+
+- web multijugador en tiempo real con **Node.js + Express + Socket.IO**
+- salas con host
+- configuración de dificultad, impostores, tiempos y rondas
+- fases: lobby, pistas, debate, votación, eliminación y chequeo de victoria
+- validación de pistas en servidor
+- comentarista interno con mensajes predefinidos
+- chat separado para eliminados
+- limitación honesta: reconexión persistente y pulido visual avanzado todavía básicos
+
+---
+
+## 1) Estructura del proyecto
+
+```text
+impostor-futbolistas/
+  package.json
+  server.js
+  /public
+    index.html
+    styles.css
+    app.js
+```
+
+---
+
+## 2) package.json
+
+```json
+{
+  "name": "impostor-futbolistas",
+  "version": "1.0.0",
+  "private": true,
+  "type": "commonjs",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.21.2",
+    "socket.io": "^4.8.1"
+  }
+}
+```
+
+---
+
+## 3) server.js
+
+```js
+const express = require('express');
+const http = require('http');
+const { Server } = require('socket.io');
+const path = require('path');
+
+const app = express();
+const server = http.createServer(app);
+const io = new Server(server);
+
+app.use(express.static(path.join(__dirname, 'public')));
+
+const PORT = process.env.PORT || 3000;
+
+const MAX_PLAYERS = 12;
+const MIN_PLAYERS = 5;
+const MAX_ROUNDS_LIMIT = 30;
+
+const commentator = {
+  lobby: [
+    'La sala está tomando forma.',
+    'Todo listo para una ronda bien streamera.',
+    'Se siente la tensión antes del arranque.',
+  ],
+  clue: [
+    'Se viene una pista que puede delatar.',
+    'Ojo con repetir, que acá todo se mira.',
+    'Cada palabra pesa en esta ronda.',
+  ],
+  debate: [
+    'Ahora sí, momento de desconfiar de todos.',
+    'Empieza el debate: acá se separan los inocentes de los vendehumo.',
+    'Hablen ahora, después no lloren en la votación.',
+  ],
+  vote: [
+    'Llegó la hora de votar.',
+    'Cada voto puede romper la ronda.',
+    'Silencio tenso antes del veredicto.',
+  ],
+  reveal: [
+    'La mesa quedó dada vuelta.',
+    'La ronda acaba de cambiar por completo.',
+    'Esto ya tiene aroma a clip de stream.',
+  ],
+};
+
+function pick(arr) {
+  return arr[Math.floor(Math.random() * arr.length)];
+}
+
+function normalize(value) {
+  return value
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .trim();
+}
+
+const footballers = [
+  ...[
+    'Lionel Messi',
+    'Cristiano Ronaldo',
+    'Neymar',
+    'Kylian Mbappe',
+    'Erling Haaland',
+    'Luka Modric',
+    'Karim Benzema',
+    'Mohamed Salah',
+    'Robert Lewandowski',
+    'Vinicius Junior',
+    'Jude Bellingham',
+    'Kevin De Bruyne',
+    'Harry Kane',
+    'Antoine Griezmann',
+    'Sergio Ramos',
+    'Luis Suarez',
+    'Angel Di Maria',
+    'Paulo Dybala',
+    'Lautaro Martinez',
+    'Emiliano Martinez',
+    'Pedri',
+    'Gavi',
+    'Rodri',
+    'Julian Alvarez',
+    'Son Heung-min',
+    'Bruno Fernandes',
+    'Federico Valverde',
+    'Riyad Mahrez',
+    'Sadio Mane',
+    'Casemiro',
+    'Toni Kroos',
+    'Gerard Pique',
+    'Xavi',
+    'Andres Iniesta',
+    'Ronaldinho',
+    'Zinedine Zidane',
+    'David Beckham',
+    'Thierry Henry',
+    'Kaka',
+    'Ronaldo Nazario',
+    'Ronald Koeman',
+    'Gianluigi Buffon',
+    'Iker Casillas',
+    'Sergio Aguero',
+    'Carlos Tevez',
+    'Didier Drogba',
+    'Wayne Rooney',
+    'Francesco Totti',
+    'Andrea Pirlo',
+    'Edinson Cavani',
+  ].map((name) => ({ name, difficulty: 'casual' })),
+  ...[
+    'Alexis Mac Allister',
+    'Joshua Kimmich',
+    'Nicolo Barella',
+    'Rodrygo',
+    'Martin Odegaard',
+    'Joao Felix',
+    'Ruben Dias',
+    'Bernardo Silva',
+    'Declan Rice',
+    'Phil Foden',
+    'Bukayo Saka',
+    'Martinelli',
+    'Gabriel Jesus',
+    'Enzo Fernandez',
+    'Leandro Paredes',
+    'Giovani Lo Celso',
+    'Marcos Acuna',
+    'Cristian Romero',
+    'Nahuel Molina',
+    'Mikel Merino',
+    'Dani Carvajal',
+    'Achraf Hakimi',
+    'Theo Hernandez',
+    'Mike Maignan',
+    'Marcus Rashford',
+    'Jamal Musiala',
+    'Leroy Sane',
+    'Ilkay Gundogan',
+    'Hakan Calhanoglu',
+    'Hugo Lloris',
+    'Aurelien Tchouameni',
+    'Eduardo Camavinga',
+    'Frenkie de Jong',
+    'Memphis Depay',
+    'Cody Gakpo',
+    'Virgil van Dijk',
+    'Alphonso Davies',
+    'Joao Cancelo',
+    'Raphinha',
+    'Ferran Torres',
+    'Niclas Fullkrug',
+    'Kai Havertz',
+    'Dusan Vlahovic',
+    'Federico Chiesa',
+    'Adrien Rabiot',
+    'Piotr Zielinski',
+    'Khvicha Kvaratskhelia',
+    'Victor Osimhen',
+    'Kim Min-jae',
+    'Min-jae',
+    'Takefusa Kubo',
+    'Isco',
+    'Mason Mount',
+    'Conor Gallagher',
+    'Dominik Livakovic',
+    'Yassine Bounou',
+    'Giovanni Di Lorenzo',
+    'Jonathan David',
+    'Romelu Lukaku',
+    'Christian Pulisic',
+    'Weston McKennie',
+    'Tyler Adams',
+    'Leon Goretzka',
+    'Marquinhos',
+    'Gabriel Magalhaes',
+    'Ederson',
+    'Alisson Becker',
+    'Raphael Varane',
+    'Mats Hummels',
+    'Alejandro Garnacho',
+  ].map((name) => ({ name, difficulty: 'futbolero' })),
+  ...[
+    'Jeremie Frimpong',
+    'Joao Palhinha',
+    'Dani Olmo',
+    'Dominik Szoboszlai',
+    'Leonardo Balerdi',
+    'Thiago Almada',
+    'Alexander Sorloth',
+    'Santiago Hezze',
+    'Anibal Moreno',
+    'Kevin Zenon',
+    'Cristian Medina',
+    'Claudio Echeverri',
+    'Ian Maatsen',
+    'Tijjani Reijnders',
+    'Teun Koopmeiners',
+    'Morten Hjulmand',
+    'Jesper Lindstrom',
+    'Mikkel Damsgaard',
+    'Albert Gudmundsson',
+    'Riccardo Calafiori',
+    'Giorgio Scalvini',
+    'Sam Beukema',
+    'Piero Hincapie',
+    'Facundo Medina',
+    'Kevin Mier',
+    'Jhon Arias',
+    'Richard Rios',
+    'Yerson Mosquera',
+    'Johan Carbonero',
+    'Kevin Lomonato',
+    'Valentin Barco',
+    'Esequiel Barco',
+    'Santiago Simon',
+    'Ignacio Fernandez',
+    'Facundo Farías',
+    'Luca Langoni',
+    'Adonis Frias',
+    'Alan Velasco',
+    'Santiago Castro',
+    'Luciano Gondou',
+    'Mateo Retegui',
+    'Valentin Castellanos',
+    'Santiago Gimenez',
+    'Orkun Kokcu',
+    'Kerem Akturkoglu',
+    'Arda Guler',
+    'Yunus Musah',
+    'Malick Thiaw',
+    'Benjamin Sesko',
+    'Lois Openda',
+    'Castello Lukeba',
+    'Jorrel Hato',
+    'Quinten Timber',
+    'Mats Wieffer',
+    'Vangelis Pavlidis',
+    'Georges Mikautadze',
+    'Youssef En-Nesyri',
+    'Bilal El Khannouss',
+    'Ayyoub Bouaddi',
+    'Mamadou Sarr',
+    'Julian Carranza',
+    'Ramiro Enrique',
+    'Juan Nardoni',
+    'Juanfer Quintero',
+    'Facundo Colidio',
+    'Pablo Solari',
+    'Miguel Borja',
+    'Maxi Salas',
+    'Braian Aguirre',
+    'Augustin Giay',
+  ].map((name) => ({ name, difficulty: 'hardcore' })),
+];
+
+function makeId(length = 6) {
+  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+  let out = '';
+  for (let i = 0; i < length; i++)
+    out += chars[Math.floor(Math.random() * chars.length)];
+  return out;
+}
+
+function maxImpostors(playerCount) {
+  return Math.max(1, Math.floor(playerCount * 0.3));
+}
+
+function createPlayer(socket, name) {
+  return {
+    id: socket.id,
+    name,
+    alive: true,
+    isHost: false,
+    role: 'innocent',
+    clue: '',
+    vote: null,
+  };
+}
+
+function publicRoomState(room, viewerId) {
+  const viewer = room.players.find((p) => p.id === viewerId);
+  return {
+    code: room.code,
+    phase: room.phase,
+    config: room.config,
+    currentRound: room.currentRound,
+    currentTurnIndex: room.currentTurnIndex,
+    currentVoteIndex: room.currentVoteIndex,
+    roundStarterIndex: room.roundStarterIndex,
+    timerEndsAt: room.timerEndsAt,
+    message: room.message,
+    commentatorMessage: room.commentatorMessage,
+    footballer:
+      viewer && viewer.role === 'innocent' ? room.currentFootballer : null,
+    players: room.players.map((p) => ({
+      id: p.id,
+      name: p.name,
+      alive: p.alive,
+      isHost: p.isHost,
+      clue: room.revealedClues[p.id] || '',
+      vote: room.revealedVotes[p.id] || null,
+    })),
+    aliveOrder: room.turnOrder
+      .map((id) => room.players.find((p) => p.id === id)?.name)
+      .filter(Boolean),
+    eliminated: room.players
+      .filter((p) => !p.alive)
+      .map((p) => ({ id: p.id, name: p.name })),
+    deadChat: room.deadChat,
+    gameOver: room.gameOver,
+    winner: room.winner,
+  };
+}
+
+function broadcastRoom(room) {
+  room.players.forEach((player) => {
+    io.to(player.id).emit('room:update', publicRoomState(room, player.id));
+  });
+}
+
+function resetRoundFields(room) {
+  room.players.forEach((p) => {
+    p.clue = '';
+    p.vote = null;
+  });
+  room.revealedClues = {};
+  room.revealedVotes = {};
+}
+
+function chooseFootballer(room) {
+  const pool = footballers.filter(
+    (f) => f.difficulty === room.config.difficulty
+  );
+  const recent = room.recentFootballers;
+  const candidates = pool.filter((f) => !recent.includes(f.name));
+  const source = candidates.length > 0 ? candidates : pool;
+  const chosen = pick(source);
+  room.currentFootballer = chosen.name;
+  room.recentFootballers.push(chosen.name);
+  if (room.recentFootballers.length > 8) room.recentFootballers.shift();
+}
+
+function assignRoles(room) {
+  const alivePlayers = room.players.filter((p) => p.alive);
+  alivePlayers.forEach((p) => (p.role = 'innocent'));
+  const ids = alivePlayers.map((p) => p.id);
+  for (let i = ids.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [ids[i], ids[j]] = [ids[j], ids[i]];
+  }
+  const impostorIds = ids.slice(0, room.config.impostors);
+  room.players.forEach((p) => {
+    if (impostorIds.includes(p.id)) p.role = 'impostor';
+  });
+}
+
+function getAliveTurnOrder(room) {
+  const alive = room.players.filter((p) => p.alive);
+  const len = alive.length;
+  if (!len) return [];
+  const start = room.roundStarterIndex % len;
+  return [...alive.slice(start), ...alive.slice(0, start)].map((p) => p.id);
+}
+
+function startClueTimer(room) {
+  room.phase = 'clue';
+  room.commentatorMessage = pick(commentator.clue);
+  room.currentTurnIndex = 0;
+  room.turnOrder = getAliveTurnOrder(room);
+  room.message = 'Fase de pistas';
+  room.timerEndsAt = Date.now() + room.config.clueSeconds * 1000;
+  clearExistingTimer(room);
+  room.timeout = setTimeout(
+    () => {
+      room.message = 'Tiempo agotado, turno saltado.';
+      advanceClueTurn(room);
+    },
+    room.config.clueSeconds * 1000 + 50
+  );
+  broadcastRoom(room);
+}
+
+function startDebate(room) {
+  room.phase = 'debate';
+  room.commentatorMessage = pick(commentator.debate);
+  room.message = 'Fase de debate';
+  room.timerEndsAt = Date.now() + room.config.debateSeconds * 1000;
+  clearExistingTimer(room);
+  room.timeout = setTimeout(
+    () => {
+      startVote(room);
+    },
+    room.config.debateSeconds * 1000 + 50
+  );
+  broadcastRoom(room);
+}
+
+function startVote(room) {
+  room.phase = 'vote';
+  room.commentatorMessage = pick(commentator.vote);
+  room.voteOrder = room.turnOrder.filter(
+    (id) => room.players.find((p) => p.id === id)?.alive
+  );
+  room.currentVoteIndex = 0;
+  room.message = 'Fase de votación';
+  room.timerEndsAt = null;
+  clearExistingTimer(room);
+  broadcastRoom(room);
+}
+
+function clearExistingTimer(room) {
+  if (room.timeout) {
+    clearTimeout(room.timeout);
+    room.timeout = null;
+  }
+}
+
+function advanceClueTurn(room) {
+  clearExistingTimer(room);
+  room.currentTurnIndex += 1;
+  if (room.currentTurnIndex >= room.turnOrder.length) {
+    startDebate(room);
+    return;
+  }
+  room.timerEndsAt = Date.now() + room.config.clueSeconds * 1000;
+  room.commentatorMessage = pick(commentator.clue);
+  room.timeout = setTimeout(
+    () => {
+      room.message = 'Tiempo agotado, turno saltado.';
+      advanceClueTurn(room);
+    },
+    room.config.clueSeconds * 1000 + 50
+  );
+  broadcastRoom(room);
+}
+
+function currentCluePlayer(room) {
+  return room.turnOrder[room.currentTurnIndex];
+}
+
+function currentVotePlayer(room) {
+  return room.voteOrder[room.currentVoteIndex];
+}
+
+function validateClue(footballer, clue) {
+  const text = normalize(clue);
+  if (!text) return 'La pista no puede estar vacía.';
+  if (text.length > 30) return 'La pista supera los 30 caracteres.';
+  const nameParts = normalize(footballer).split(/\s+/).filter(Boolean);
+  for (const part of nameParts) {
+    if (part.length >= 3 && text.includes(part)) {
+      return 'La pista no puede incluir nombre o apellido.';
+    }
+  }
+  return null;
+}
+
+function applyElimination(room, playerId) {
+  const target = room.players.find((p) => p.id === playerId);
+  if (!target) return;
+  target.alive = false;
+  room.commentatorMessage = pick(commentator.reveal);
+  room.message = `${target.name} fue eliminado/a.`;
+}
+
+function checkVictory(room) {
+  const alive = room.players.filter((p) => p.alive);
+  const impostors = alive.filter((p) => p.role === 'impostor');
+  const innocents = alive.filter((p) => p.role !== 'impostor');
+
+  if (impostors.length === 0) {
+    room.gameOver = true;
+    room.phase = 'gameover';
+    room.winner = 'inocentes';
+    room.message = 'Los inocentes eliminaron a todos los impostores.';
+    room.timerEndsAt = null;
+    return true;
+  }
+
+  if (impostors.length >= innocents.length) {
+    room.gameOver = true;
+    room.phase = 'gameover';
+    room.winner = 'impostores';
+    room.message = 'Los impostores igualaron o superaron a los inocentes.';
+    room.timerEndsAt = null;
+    return true;
+  }
+
+  return false;
+}
+
+function startRound(room) {
+  if (room.currentRound >= room.config.maxRounds) {
+    room.gameOver = true;
+    room.phase = 'gameover';
+    room.winner = 'sin ganador';
+    room.message = 'Se alcanzó el máximo de rondas.';
+    room.timerEndsAt = null;
+    broadcastRoom(room);
+    return;
+  }
+
+  resetRoundFields(room);
+  room.currentRound += 1;
+  room.players.forEach((p) => {
+    if (room.currentRound === 1) p.alive = true;
+  });
+  chooseFootballer(room);
+  assignRoles(room);
+  room.phase = 'round-start';
+  room.commentatorMessage = pick(commentator.lobby);
+  room.message = `Comienza la ronda ${room.currentRound}.`;
+  room.roundStarterIndex = room.players.filter((p) => p.alive).length
+    ? (room.roundStarterIndex + 1) % room.players.filter((p) => p.alive).length
+    : 0;
+  setTimeout(() => startClueTimer(room), 800);
+  broadcastRoom(room);
+}
+
+const rooms = new Map();
+
+function createRoom(socket, playerName) {
+  let code = makeId();
+  while (rooms.has(code)) code = makeId();
+
+  const player = createPlayer(socket, playerName);
+  player.isHost = true;
+
+  const room = {
+    code,
+    hostId: socket.id,
+    players: [player],
+    phase: 'lobby',
+    config: {
+      difficulty: 'casual',
+      impostors: 1,
+      clueSeconds: 30,
+      debateSeconds: 60,
+      maxRounds: 10,
+    },
+    currentRound: 0,
+    currentFootballer: null,
+    recentFootballers: [],
+    currentTurnIndex: 0,
+    currentVoteIndex: 0,
+    roundStarterIndex: -1,
+    turnOrder: [],
+    voteOrder: [],
+    revealedClues: {},
+    revealedVotes: {},
+    timerEndsAt: null,
+    timeout: null,
+    message: 'Sala creada.',
+    commentatorMessage: pick(commentator.lobby),
+    deadChat: [],
+    gameOver: false,
+    winner: null,
+  };
+
+  rooms.set(code, room);
+  socket.join(code);
+  broadcastRoom(room);
+}
+
+function joinRoom(socket, code, playerName) {
+  const room = rooms.get(code);
+  if (!room) return { error: 'Sala inexistente.' };
+  if (room.players.length >= MAX_PLAYERS)
+    return { error: 'La sala está llena.' };
+  if (room.phase !== 'lobby') return { error: 'La partida ya comenzó.' };
+  if (room.players.some((p) => normalize(p.name) === normalize(playerName))) {
+    return { error: 'Ese nombre ya está en uso.' };
+  }
+  const player = createPlayer(socket, playerName);
+  room.players.push(player);
+  socket.join(code);
+  broadcastRoom(room);
+  return { ok: true };
+}
+
+io.on('connection', (socket) => {
+  socket.on('room:create', ({ name }) => {
+    if (!name?.trim()) {
+      socket.emit('app:error', 'Tenés que ingresar un nombre.');
+      return;
+    }
+    createRoom(socket, name.trim());
+  });
+
+  socket.on('room:join', ({ code, name }) => {
+    if (!name?.trim() || !code?.trim()) {
+      socket.emit('app:error', 'Código y nombre son obligatorios.');
+      return;
+    }
+    const result = joinRoom(socket, code.trim().toUpperCase(), name.trim());
+    if (result?.error) socket.emit('app:error', result.error);
+  });
+
+  socket.on('room:updateConfig', ({ code, config }) => {
+    const room = rooms.get(code);
+    if (!room || room.hostId !== socket.id || room.phase !== 'lobby') return;
+
+    const playerCount = room.players.length;
+    const maxImp = maxImpostors(playerCount);
+    room.config = {
+      difficulty: ['casual', 'futbolero', 'hardcore'].includes(
+        config.difficulty
+      )
+        ? config.difficulty
+        : 'casual',
+      impostors: Math.max(1, Math.min(Number(config.impostors) || 1, maxImp)),
+      clueSeconds: Math.max(10, Math.min(Number(config.clueSeconds) || 30, 90)),
+      debateSeconds: Math.max(
+        20,
+        Math.min(Number(config.debateSeconds) || 60, 180)
+      ),
+      maxRounds: Math.max(
+        1,
+        Math.min(Number(config.maxRounds) || 10, MAX_ROUNDS_LIMIT)
+      ),
+    };
+    room.message = 'Configuración actualizada.';
+    broadcastRoom(room);
+  });
+
+  socket.on('game:start', ({ code }) => {
+    const room = rooms.get(code);
+    if (!room || room.hostId !== socket.id || room.phase !== 'lobby') return;
+    if (room.players.length < MIN_PLAYERS) {
+      socket.emit(
+        'app:error',
+        `Se necesitan al menos ${MIN_PLAYERS} jugadores.`
+      );
+      return;
+    }
+    if (room.players.length > MAX_PLAYERS) {
+      socket.emit('app:error', `Máximo ${MAX_PLAYERS} jugadores.`);
+      return;
+    }
+    room.gameOver = false;
+    room.winner = null;
+    room.players.forEach((p) => (p.alive = true));
+    startRound(room);
+  });
+
+  socket.on('clue:submit', ({ code, clue }) => {
+    const room = rooms.get(code);
+    if (!room || room.phase !== 'clue') return;
+    if (currentCluePlayer(room) !== socket.id) return;
+
+    const player = room.players.find((p) => p.id === socket.id);
+    if (!player || !player.alive) return;
+
+    const error = validateClue(room.currentFootballer, String(clue || ''));
+    if (error) {
+      socket.emit('app:error', error);
+      return;
+    }
+
+    player.clue = String(clue).trim();
+    room.revealedClues[player.id] = player.clue;
+    room.message = `${player.name} dio su pista.`;
+    advanceClueTurn(room);
+  });
+
+  socket.on('vote:submit', ({ code, targetId }) => {
+    const room = rooms.get(code);
+    if (!room || room.phase !== 'vote') return;
+    if (currentVotePlayer(room) !== socket.id) return;
+
+    const voter = room.players.find((p) => p.id === socket.id);
+    const target = room.players.find((p) => p.id === targetId);
+    if (!voter || !voter.alive || !target || !target.alive) return;
+
+    voter.vote = target.id;
+    room.revealedVotes[voter.id] = target.name;
+    room.currentVoteIndex += 1;
+
+    if (room.currentVoteIndex >= room.voteOrder.length) {
+      const tally = new Map();
+      room.players
+        .filter((p) => p.alive)
+        .forEach((p) => {
+          if (p.vote) tally.set(p.vote, (tally.get(p.vote) || 0) + 1);
+        });
+
+      let maxVotes = 0;
+      let winners = [];
+      for (const [id, count] of tally.entries()) {
+        if (count > maxVotes) {
+          maxVotes = count;
+          winners = [id];
+        } else if (count === maxVotes) {
+          winners.push(id);
+        }
+      }
+
+      if (winners.length !== 1) {
+        room.message = 'Empate en la votación. Se repite.';
+        room.players.forEach((p) => (p.vote = null));
+        room.revealedVotes = {};
+        room.currentVoteIndex = 0;
+        room.commentatorMessage = 'Empate total. Se viene una nueva votación.';
+        broadcastRoom(room);
+        return;
+      }
+
+      applyElimination(room, winners[0]);
+      if (checkVictory(room)) {
+        broadcastRoom(room);
+        return;
+      }
+
+      resetRoundFields(room);
+      setTimeout(() => {
+        startRound(room);
+      }, 1400);
+      broadcastRoom(room);
+      return;
+    }
+
+    broadcastRoom(room);
+  });
+
+  socket.on('deadchat:send', ({ code, message }) => {
+    const room = rooms.get(code);
+    if (!room) return;
+    const player = room.players.find((p) => p.id === socket.id);
+    if (!player || player.alive) return;
+    const text = String(message || '').trim();
+    if (!text) return;
+    room.deadChat.push({ author: player.name, text, at: Date.now() });
+    if (room.deadChat.length > 40) room.deadChat.shift();
+    broadcastRoom(room);
+  });
+
+  socket.on('disconnect', () => {
+    for (const [code, room] of rooms.entries()) {
+      const idx = room.players.findIndex((p) => p.id === socket.id);
+      if (idx === -1) continue;
+      const leaving = room.players[idx];
+      room.players.splice(idx, 1);
+
+      if (room.players.length === 0) {
+        clearExistingTimer(room);
+        rooms.delete(code);
+        return;
+      }
+
+      if (room.hostId === socket.id) {
+        room.hostId = room.players[0].id;
+        room.players[0].isHost = true;
+      }
+      room.players.forEach((p) => {
+        if (p.id !== room.hostId) p.isHost = false;
+      });
+
+      room.message = `${leaving.name} salió de la sala.`;
+
+      if (room.phase !== 'lobby' && leaving.alive) {
+        leaving.alive = false;
+        if (!checkVictory(room)) {
+          room.commentatorMessage = 'Hubo una desconexión durante la partida.';
+        }
+      }
+
+      broadcastRoom(room);
+      return;
+    }
+  });
+});
+
+server.listen(PORT, () => {
+  console.log(`Servidor escuchando en http://localhost:${PORT}`);
+});
+```
+
+---
+
+## 4) public/index.html
+
+```html
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Impostor de Futbolistas</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div id="app">
+      <section id="home" class="screen card">
+        <h1>Impostor de Futbolistas</h1>
+        <p class="subtitle">Juego social multijugador en tiempo real.</p>
+
+        <div class="stack">
+          <input id="playerName" placeholder="Tu nombre" maxlength="20" />
+          <div class="row">
+            <button id="createRoomBtn" class="primary">Crear sala</button>
+          </div>
+          <div class="divider">o</div>
+          <div class="row">
+            <input id="joinCode" placeholder="Código" maxlength="6" />
+            <button id="joinRoomBtn">Unirme</button>
+          </div>
+        </div>
+      </section>
+
+      <section id="room" class="screen hidden">
+        <header class="topbar card">
+          <div>
+            <h2 id="roomCode">Sala</h2>
+            <p id="roomMessage"></p>
+          </div>
+          <div class="pill" id="phaseBadge">Lobby</div>
+        </header>
+
+        <div class="grid">
+          <aside class="card">
+            <h3>Configuración</h3>
+            <label
+              >Dificultad
+              <select id="difficultySelect">
+                <option value="casual">Casual</option>
+                <option value="futbolero">Futbolero</option>
+                <option value="hardcore">Hardcore</option>
+              </select>
+            </label>
+            <label
+              >Impostores
+              <input id="impostorsInput" type="number" min="1" value="1" />
+            </label>
+            <label
+              >Segundos por pista
+              <input id="clueSecondsInput" type="number" min="10" value="30" />
+            </label>
+            <label
+              >Segundos de debate
+              <input
+                id="debateSecondsInput"
+                type="number"
+                min="20"
+                value="60"
+              />
+            </label>
+            <label
+              >Máx. rondas
+              <input
+                id="maxRoundsInput"
+                type="number"
+                min="1"
+                max="30"
+                value="10"
+              />
+            </label>
+            <button id="saveConfigBtn">Guardar configuración</button>
+            <button id="startGameBtn" class="primary">Iniciar partida</button>
+          </aside>
+
+          <main class="stack">
+            <section class="card hero">
+              <div class="row between">
+                <div>
+                  <h3 id="roundLabel">Ronda 0</h3>
+                  <p id="commentator"></p>
+                </div>
+                <div class="timer" id="timerText">--</div>
+              </div>
+              <div class="secret" id="secretFootballer">Esperando ronda...</div>
+            </section>
+
+            <section class="card">
+              <h3>Jugadores</h3>
+              <div id="playersList" class="players"></div>
+            </section>
+
+            <section class="card">
+              <h3>Pistas reveladas</h3>
+              <div id="cluesList" class="log"></div>
+            </section>
+
+            <section class="card hidden" id="cluePanel">
+              <h3>Tu turno de pista</h3>
+              <p>Máximo 30 caracteres. No digas nombre ni apellido.</p>
+              <div class="row">
+                <input
+                  id="clueInput"
+                  maxlength="30"
+                  placeholder="Escribí tu pista"
+                />
+                <button id="sendClueBtn" class="primary">Enviar</button>
+              </div>
+            </section>
+
+            <section class="card hidden" id="votePanel">
+              <h3>Te toca votar</h3>
+              <div id="voteTargets" class="vote-targets"></div>
+            </section>
+          </main>
+
+          <aside class="stack">
+            <section class="card">
+              <h3>Votaciones</h3>
+              <div id="votesList" class="log"></div>
+            </section>
+
+            <section class="card hidden" id="deadChatPanel">
+              <h3>Chat de eliminados</h3>
+              <div id="deadChatMessages" class="log small"></div>
+              <div class="row">
+                <input
+                  id="deadChatInput"
+                  maxlength="120"
+                  placeholder="Mensaje"
+                />
+                <button id="sendDeadChatBtn">Enviar</button>
+              </div>
+            </section>
+          </aside>
+        </div>
+      </section>
+    </div>
+
+    <div id="toast"></div>
+
+    <script src="/socket.io/socket.io.js"></script>
+    <script src="/app.js"></script>
+  </body>
+</html>
+```
+
+---
+
+## 5) public/styles.css
+
+```css
+:root {
+  --bg: #0b1220;
+  --panel: #121b2f;
+  --panel-2: #18243d;
+  --text: #edf2ff;
+  --muted: #9fb0d5;
+  --accent: #57c7ff;
+  --accent-2: #7dffb3;
+  --danger: #ff6b81;
+  --border: rgba(255, 255, 255, 0.08);
+  --shadow: 0 20px 60px rgba(0, 0, 0, 0.35);
+}
+
+* {
+  box-sizing: border-box;
+}
+body {
+  margin: 0;
+  font-family: Inter, system-ui, sans-serif;
+  background: radial-gradient(circle at top, #13203b 0%, var(--bg) 55%);
+  color: var(--text);
+}
+
+.hidden {
+  display: none !important;
+}
+
+#app {
+  max-width: 1400px;
+  margin: 0 auto;
+  padding: 24px;
+}
+
+.screen {
+  min-height: calc(100vh - 48px);
+}
+.card {
+  background: linear-gradient(180deg, var(--panel), var(--panel-2));
+  border: 1px solid var(--border);
+  border-radius: 22px;
+  box-shadow: var(--shadow);
+  padding: 18px;
+}
+
+#home {
+  max-width: 560px;
+  margin: 6vh auto;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 10px;
+}
+
+h1,
+h2,
+h3,
+p {
+  margin-top: 0;
+}
+.subtitle {
+  color: var(--muted);
+}
+.stack {
+  display: grid;
+  gap: 14px;
+}
+.row {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+}
+.between {
+  justify-content: space-between;
+}
+.grid {
+  display: grid;
+  grid-template-columns: 300px 1fr 280px;
+  gap: 16px;
+  margin-top: 16px;
+}
+input,
+select,
+button {
+  width: 100%;
+  border-radius: 14px;
+  border: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--text);
+  padding: 12px 14px;
+}
+button {
+  cursor: pointer;
+  transition:
+    0.18s transform,
+    0.18s opacity,
+    0.18s background;
+}
+button:hover {
+  transform: translateY(-1px);
+  opacity: 0.96;
+}
+button.primary {
+  background: linear-gradient(135deg, var(--accent), #7d8cff);
+  color: #09111e;
+  font-weight: 700;
+  border: none;
+}
+label {
+  display: grid;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 14px;
+}
+.topbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+.pill,
+.timer {
+  padding: 10px 14px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.08);
+}
+.hero .secret {
+  margin-top: 10px;
+  padding: 16px;
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.06);
+  font-size: 22px;
+  font-weight: 700;
+}
+.players {
+  display: grid;
+  gap: 10px;
+}
+.player {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  gap: 10px;
+  align-items: center;
+  padding: 12px;
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.05);
+}
+.player.dead {
+  opacity: 0.56;
+}
+.tag {
+  font-size: 12px;
+  color: #08101a;
+  background: var(--accent-2);
+  border-radius: 999px;
+  padding: 4px 10px;
+}
+.log {
+  display: grid;
+  gap: 8px;
+  max-height: 260px;
+  overflow: auto;
+}
+.log.small {
+  max-height: 180px;
+}
+.log-item {
+  padding: 10px 12px;
+  background: rgba(255, 255, 255, 0.05);
+  border-radius: 14px;
+}
+.vote-targets {
+  display: grid;
+  gap: 10px;
+}
+.vote-btn {
+  text-align: left;
+}
+.divider {
+  text-align: center;
+  color: var(--muted);
+}
+#toast {
+  position: fixed;
+  right: 18px;
+  bottom: 18px;
+  background: #101826;
+  color: white;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 14px;
+  padding: 12px 14px;
+  display: none;
+}
+
+@media (max-width: 1100px) {
+  .grid {
+    grid-template-columns: 1fr;
+  }
+}
+```
+
+---
+
+## 6) public/app.js
+
+```js
+const socket = io();
+
+const state = {
+  room: null,
+  myId: null,
+};
+
+const $ = (sel) => document.querySelector(sel);
+const home = $('#home');
+const roomScreen = $('#room');
+
+function toast(message) {
+  const el = $('#toast');
+  el.textContent = message;
+  el.style.display = 'block';
+  clearTimeout(toast.t);
+  toast.t = setTimeout(() => (el.style.display = 'none'), 2800);
+}
+
+function getMyPlayer() {
+  return state.room?.players?.find((p) => p.id === state.myId);
+}
+
+function isMyTurnForClue() {
+  if (!state.room || state.room.phase !== 'clue') return false;
+  const current = state.room.aliveOrder[state.room.currentTurnIndex];
+  return current && getMyPlayer()?.name === current;
+}
+
+function isMyTurnForVote() {
+  if (!state.room || state.room.phase !== 'vote') return false;
+  const aliveNames = state.room.aliveOrder;
+  const current = aliveNames[state.room.currentVoteIndex];
+  return current && getMyPlayer()?.name === current;
+}
+
+function renderPlayers() {
+  const wrap = $('#playersList');
+  wrap.innerHTML = '';
+  for (const player of state.room.players) {
+    const div = document.createElement('div');
+    div.className = `player ${player.alive ? '' : 'dead'}`;
+    div.innerHTML = `
+      <strong>${player.name}</strong>
+      ${player.isHost ? '<span class="tag">HOST</span>' : '<span></span>'}
+      ${player.alive ? '<span>🟢</span>' : '<span>⚪</span>'}
+    `;
+    wrap.appendChild(div);
+  }
+}
+
+function renderClues() {
+  const wrap = $('#cluesList');
+  wrap.innerHTML = '';
+  const entries = state.room.players.filter((p) => p.clue);
+  if (!entries.length) {
+    wrap.innerHTML = '<div class="log-item">Todavía no hay pistas.</div>';
+    return;
+  }
+  entries.forEach((p) => {
+    const div = document.createElement('div');
+    div.className = 'log-item';
+    div.textContent = `${p.name}: ${p.clue}`;
+    wrap.appendChild(div);
+  });
+}
+
+function renderVotes() {
+  const wrap = $('#votesList');
+  wrap.innerHTML = '';
+  const entries = state.room.players.filter((p) => p.vote);
+  if (!entries.length) {
+    wrap.innerHTML = '<div class="log-item">Sin votos mostrados todavía.</div>';
+    return;
+  }
+  entries.forEach((p) => {
+    const div = document.createElement('div');
+    div.className = 'log-item';
+    div.textContent = `${p.name} votó a ${p.vote}`;
+    wrap.appendChild(div);
+  });
+}
+
+function renderDeadChat() {
+  const me = getMyPlayer();
+  const panel = $('#deadChatPanel');
+  panel.classList.toggle('hidden', !me || me.alive);
+  if (!me || me.alive) return;
+  const wrap = $('#deadChatMessages');
+  wrap.innerHTML = '';
+  if (!state.room.deadChat.length) {
+    wrap.innerHTML = '<div class="log-item">Todavía no hay mensajes.</div>';
+    return;
+  }
+  state.room.deadChat.forEach((msg) => {
+    const div = document.createElement('div');
+    div.className = 'log-item';
+    div.textContent = `${msg.author}: ${msg.text}`;
+    wrap.appendChild(div);
+  });
+}
+
+function renderVoteTargets() {
+  const panel = $('#votePanel');
+  const wrap = $('#voteTargets');
+  const my = getMyPlayer();
+  const canVote = isMyTurnForVote() && my?.alive;
+  panel.classList.toggle('hidden', !canVote);
+  wrap.innerHTML = '';
+  if (!canVote) return;
+
+  state.room.players
+    .filter((p) => p.alive && p.id !== my.id)
+    .forEach((p) => {
+      const btn = document.createElement('button');
+      btn.className = 'vote-btn';
+      btn.textContent = `Votar a ${p.name}`;
+      btn.onclick = () => {
+        socket.emit('vote:submit', { code: state.room.code, targetId: p.id });
+      };
+      wrap.appendChild(btn);
+    });
+}
+
+function renderCluePanel() {
+  $('#cluePanel').classList.toggle('hidden', !isMyTurnForClue());
+}
+
+function updateConfigPanel() {
+  const me = getMyPlayer();
+  const isHost = me?.isHost && state.room.phase === 'lobby';
+  [
+    'difficultySelect',
+    'impostorsInput',
+    'clueSecondsInput',
+    'debateSecondsInput',
+    'maxRoundsInput',
+    'saveConfigBtn',
+    'startGameBtn',
+  ].forEach((id) => ($('#' + id).disabled = !isHost));
+
+  $('#difficultySelect').value = state.room.config.difficulty;
+  $('#impostorsInput').value = state.room.config.impostors;
+  $('#clueSecondsInput').value = state.room.config.clueSeconds;
+  $('#debateSecondsInput').value = state.room.config.debateSeconds;
+  $('#maxRoundsInput').value = state.room.config.maxRounds;
+}
+
+function renderRoom() {
+  if (!state.room) return;
+
+  home.classList.add('hidden');
+  roomScreen.classList.remove('hidden');
+
+  $('#roomCode').textContent = `Sala ${state.room.code}`;
+  $('#roomMessage').textContent = state.room.message || '';
+  $('#phaseBadge').textContent = state.room.phase;
+  $('#roundLabel').textContent = `Ronda ${state.room.currentRound}`;
+  $('#commentator').textContent = state.room.commentatorMessage || '';
+  $('#secretFootballer').textContent =
+    state.room.footballer || 'Sos impostor o todavía no empezó la ronda.';
+
+  renderPlayers();
+  renderClues();
+  renderVotes();
+  renderCluePanel();
+  renderVoteTargets();
+  renderDeadChat();
+  updateConfigPanel();
+
+  if (state.room.gameOver) {
+    toast(`Partida terminada. Ganaron: ${state.room.winner}`);
+  }
+}
+
+setInterval(() => {
+  if (!state.room?.timerEndsAt) {
+    $('#timerText').textContent = '--';
+    return;
+  }
+  const left = Math.max(
+    0,
+    Math.ceil((state.room.timerEndsAt - Date.now()) / 1000)
+  );
+  $('#timerText').textContent = `${left}s`;
+}, 200);
+
+$('#createRoomBtn').onclick = () => {
+  const name = $('#playerName').value.trim();
+  socket.emit('room:create', { name });
+};
+
+$('#joinRoomBtn').onclick = () => {
+  const name = $('#playerName').value.trim();
+  const code = $('#joinCode').value.trim().toUpperCase();
+  socket.emit('room:join', { code, name });
+};
+
+$('#saveConfigBtn').onclick = () => {
+  socket.emit('room:updateConfig', {
+    code: state.room.code,
+    config: {
+      difficulty: $('#difficultySelect').value,
+      impostors: $('#impostorsInput').value,
+      clueSeconds: $('#clueSecondsInput').value,
+      debateSeconds: $('#debateSecondsInput').value,
+      maxRounds: $('#maxRoundsInput').value,
+    },
+  });
+};
+
+$('#startGameBtn').onclick = () => {
+  socket.emit('game:start', { code: state.room.code });
+};
+
+$('#sendClueBtn').onclick = () => {
+  const clue = $('#clueInput').value.trim();
+  socket.emit('clue:submit', { code: state.room.code, clue });
+  $('#clueInput').value = '';
+};
+
+$('#sendDeadChatBtn').onclick = () => {
+  const message = $('#deadChatInput').value.trim();
+  socket.emit('deadchat:send', { code: state.room.code, message });
+  $('#deadChatInput').value = '';
+};
+
+socket.on('connect', () => {
+  state.myId = socket.id;
+});
+
+socket.on('room:update', (room) => {
+  state.room = room;
+  renderRoom();
+});
+
+socket.on('app:error', (message) => {
+  toast(message);
+});
+```
+
+---
+
+## 7) Cómo ejecutarlo localmente
+
+```bash
+npm install
+npm start
+```
+
+Después abrir:
+
+```text
+http://localhost:3000
+```
+
+Para probar el multijugador:
+
+- abrí varias pestañas o varias ventanas del navegador
+- poné nombres distintos
+- en una pestaña creá la sala
+- en las otras ingresá usando el código
+- cuando haya al menos 5 jugadores, el host puede iniciar
+
+---
+
+## 8) Qué ya resuelve esta versión
+
+- reglas base del juego
+- flujo completo de una partida
+- límite de 5 a 12 jugadores
+- máximo de impostores controlado por configuración
+- dificultad casual / futbolero / hardcore
+- selección aleatoria del futbolista según dificultad
+- rotación del jugador inicial por ronda
+- pistas secuenciales de 30 caracteres
+- bloqueo de nombre y apellido en pista
+- debate con tiempo configurable
+- votación secuencial
+- nueva votación si hay empate
+- victoria de inocentes o impostores según reglas definidas
+- chat de eliminados
+
+---
+
+## 9) Limitaciones honestas de esta primera versión
+
+- la reconexión persistente todavía no está resuelta como sistema formal
+- los jugadores eliminados conservan chat, pero no hay historial privado por socket-room separado
+- la validación de pistas usa nombre y apellido, no sinónimos ni apodos
+- la base de 200 futbolistas es funcional, pero todavía no está curada con metadata extendida por posición, país o club
+- el comentarista usa frases predefinidas, no generación dinámica avanzada
+
+---
+
+## 10) Siguiente paso recomendado
+
+Después de validar esta base, conviene iterar sobre tres mejoras:
+
+1. reconexión real con playerId persistente
+2. metadata rica de futbolistas para futuras expansiones
+3. mejor HUD de turno actual, animaciones y pantalla de resultados
+
+---
+
+## 11) Fase 2 — auditoría del MVP y plan de corrección
+
+Revisando el MVP, detecté estas prioridades técnicas:
+
+### Prioridad alta
+
+- evitar que la lógica de avance entre rondas se vuelva inconsistente después de una eliminación
+- hacer más explícito en cliente quién tiene el turno actual de pista y de voto
+- robustecer la reasignación de host cuando alguien se desconecta
+- revisar el flujo de empate en votación para que no deje estados ambiguos
+
+### Prioridad media
+
+- mejorar el feedback visual del temporizador
+- mostrar mejor el estado de cada jugador vivo o eliminado
+- separar con más claridad los mensajes del comentarista de los mensajes del sistema
+
+### Prioridad baja
+
+- enriquecer la base de futbolistas con metadata adicional
+- agregar una pantalla de resumen de ronda
+- preparar el terreno para reconexión persistente
+
+---
+
+## 12) Qué corregiría ahora mismo en la siguiente iteración
+
+### En servidor
+
+- exponer explícitamente el jugador actual del turno de pista
+- exponer explícitamente el jugador actual del turno de voto
+- centralizar mejor la transición entre pista, debate, voto y fin de ronda
+- validar con más cuidado desconexiones durante una partida activa
+
+### En cliente
+
+- destacar visualmente al jugador que está actuando
+- hacer más claro cuándo te toca dar pista
+- hacer más claro cuándo te toca votar
+- mejorar la lectura del estado general de la ronda
+
+---
+
+## 13) Plan de desarrollo inmediato
+
+La forma más sana de seguir es esta:
+
+### Etapa 1
+
+Corregir la base multijugador y dejarla estable.
+
+### Etapa 2
+
+Mejorar UX y feedback visual.
+
+### Etapa 3
+
+Agregar robustez de reconexión y recuperación.
+
+### Etapa 4
+
+Pulir contenido, dificultad y presentación general.
+
+---
+
+## 14) Siguiente decisión de desarrollo
+
+Voy a seguir con este criterio:
+
+- primero **robustez del juego**
+- después **pulido visual**
+
+Eso reduce la probabilidad de que el proyecto se vea lindo pero se rompa al jugarlo con varias pestañas.
+
+---
+
+## 15) Fase 3 — endurecimiento del flujo multijugador
+
+### Objetivo
+
+Dejar el MVP más consistente en partidas reales con varias pestañas.
+
+### Cambios necesarios
+
+#### A. Consolidar la máquina de estados
+
+La partida debe moverse siempre por este camino:
+
+`lobby -> round-start -> clue -> debate -> vote -> reveal -> next-round o gameover`
+
+Regla clave:
+
+- después de votar, no debe reiniciarse la partida entera
+- solo debe eliminarse al jugador elegido, comprobar victoria y pasar a la ronda siguiente si corresponde
+
+#### B. Turnos explícitos en el payload al cliente
+
+El servidor debe enviar siempre:
+
+- `currentTurnPlayerId`
+- `currentVotePlayerId`
+- `phase`
+- `timerEndsAt`
+
+Así el cliente no intenta reconstruir lógica sensible a partir de nombres o índices ambiguos.
+
+#### C. Empates más sólidos
+
+Cuando hay empate:
+
+- se limpia la votación
+- se mantiene la misma fase de voto
+- se reinicia la secuencia de votación
+- se informa con un mensaje claro
+
+#### D. Desconexiones
+
+Si alguien se desconecta:
+
+- en lobby: se remueve sin afectar nada más
+- en partida: se remueve del room state
+- si era host: se reasigna host al primer jugador restante
+- si con esa salida se cumple condición de victoria, la partida termina
+
+#### E. Separación de mensajes
+
+Conviene separar:
+
+- `message`: mensaje del sistema
+- `commentatorMessage`: mensaje de ambientación
+
+---
+
+## 16) Fase 3 — checklist de pruebas manuales
+
+Antes de seguir con más features, esta base debería pasar estas pruebas:
+
+### Lobby
+
+- crear sala
+- unirse con varios nombres distintos
+- impedir nombres repetidos
+- impedir entrar si la partida ya comenzó
+- impedir superar 12 jugadores
+
+### Configuración
+
+- cambiar dificultad
+- cambiar impostores sin superar 30% del lobby
+- cambiar tiempo de pistas
+- cambiar tiempo de debate
+- cambiar máximo de rondas
+
+### Inicio de partida
+
+- impedir arrancar con menos de 5 jugadores
+- asignar roles correctamente
+- mostrar futbolista solo a inocentes
+
+### Fase de pistas
+
+- avanzar turno por turno
+- saltar turno si no hay respuesta
+- bloquear pista con nombre o apellido
+- aceptar pistas repetidas
+- rotar jugador inicial entre rondas
+
+### Debate
+
+- contar tiempo correctamente
+- pasar a votación cuando termina
+
+### Votación
+
+- votar uno por uno
+- impedir votar a eliminados
+- repetir la votación si hay empate
+
+### Fin de ronda
+
+- eliminar correctamente al más votado
+- mantener vivos y eliminados bien sincronizados
+- pasar a la siguiente ronda sin resetear toda la partida
+
+### Victoria
+
+- victoria inocente si no quedan impostores
+- victoria impostora si los impostores igualan o superan a los inocentes
+
+### Desconexiones
+
+- salida en lobby
+- salida en partida
+- reasignación de host
+- finalización correcta si la desconexión altera la condición de victoria
+
+---
+
+## 17) Fase 4 — mejoras recomendadas de UX
+
+Una vez estable el flujo, estas mejoras darían mucho valor:
+
+### Visuales
+
+- pantalla breve de resultado entre rondas
+- cartel más claro de “te toca”
+- resaltado del jugador actual
+- historial visual más prolijo de pistas y votos
+
+### Juego
+
+- lista de futbolistas mejor curada
+- evitar repeticiones recientes por dificultad
+- mensajes de comentarista más variados según fase y resultado
+
+### Calidad técnica
+
+- reconexión con token temporal
+- room state más modular
+- helpers separados en archivos cuando el proyecto crezca
+
+---
+
+## 18) Conclusión de desarrollo actual
+
+El proyecto ya tiene:
+
+- una base concreta
+- arquitectura web razonable
+- flujo central definido
+- prioridad correcta en estabilidad
+
+Lo más importante ahora no es agregar features nuevas, sino convertir este MVP en una base realmente confiable para testear con amigos y detectar balance, ritmo y problemas reales de partida.
+
+---
+
+## 19) Fase 5 — backlog técnico priorizado
+
+### Bloque 1: crítico
+
+Estas tareas impactan directamente en que el juego no se rompa:
+
+1. **revisión completa del flujo de ronda**
+   - confirmar que pista -> debate -> voto -> eliminación -> siguiente ronda o gameover siempre se cumpla
+
+2. **manejo explícito del turno actual**
+   - nunca depender de reconstrucciones ambiguas del cliente
+
+3. **empates de votación más claros**
+   - reset limpio de votos sin arrastrar datos previos
+
+4. **desconexión en mitad de fase**
+   - el estado no debe quedar huérfano
+
+5. **host reassignment robusto**
+   - reasignar host y mantener la sala usable
+
+### Bloque 2: importante
+
+Estas tareas mejoran bastante la experiencia real:
+
+1. **pantalla de resultado de ronda**
+2. **indicador grande de “te toca”**
+3. **feedback visual más fuerte del temporizador**
+4. **mejor lectura de vivos/eliminados**
+5. **mensajes del comentarista más contextuales**
+
+### Bloque 3: crecimiento futuro
+
+Estas tareas son útiles, pero no urgentes:
+
+1. reconexión persistente
+2. metadata avanzada de futbolistas
+3. filtros por modo o subcategoría
+4. sonido y animaciones
+5. persistencia temporal de salas
+
+---
+
+## 20) Especificación de pruebas funcionales por fase
+
+### Fase lobby
+
+Resultado esperado:
+
+- el host crea sala
+- los demás entran con código
+- no se aceptan nombres duplicados
+- no se puede arrancar con menos de 5 jugadores
+
+### Fase de pistas
+
+Resultado esperado:
+
+- cada jugador actúa una vez por ronda
+- si no responde, el turno se salta
+- la pista inválida no avanza el turno
+- las pistas válidas quedan visibles para todos
+
+### Fase de debate
+
+Resultado esperado:
+
+- el temporizador baja correctamente
+- nadie puede enviar pista nueva
+- al terminar se entra en votación
+
+### Fase de votación
+
+Resultado esperado:
+
+- vota un jugador a la vez
+- el siguiente no puede votar antes de tiempo
+- en empate la fase se reinicia limpia
+- el cliente ve claramente a quién le toca votar
+
+### Fase de eliminación
+
+Resultado esperado:
+
+- el jugador eliminado queda fuera de pistas y votos
+- pasa a chat de eliminados
+- se actualiza condición de victoria
+
+### Fase de fin de partida
+
+Resultado esperado:
+
+- si no quedan impostores, ganan inocentes
+- si impostores >= inocentes, ganan impostores
+- se congela el estado final con mensaje claro
+
+---
+
+## 21) Decisiones de arquitectura para próximas iteraciones
+
+Para que el proyecto escale sin ensuciarse, conviene separar mentalmente estos módulos:
+
+### A. Estado de sala
+
+Responsable de:
+
+- jugadores
+- host
+- configuración
+- fase actual
+- timers
+- turnos
+- votos
+- chat de eliminados
+
+### B. Reglas del juego
+
+Responsable de:
+
+- asignación de impostores
+- validación de pistas
+- transición entre fases
+- empate
+- eliminación
+- victoria
+
+### C. Transporte en tiempo real
+
+Responsable de:
+
+- eventos socket
+- broadcast por sala
+- sincronización al cliente
+
+### D. UI cliente
+
+Responsable de:
+
+- lobby
+- render de fase actual
+- feedback de turno
+- inputs del jugador
+- logs visuales
+
+Aunque en el MVP todavía está bastante centralizado, esta separación conceptual ya te dice por dónde modularizar cuando toque refactor.
+
+---
+
+## 22) Siguiente intervención recomendada sobre código
+
+La próxima intervención útil de verdad sería esta:
+
+### Servidor
+
+- extraer helpers de transición de fase
+- endurecer desconexiones durante clue y vote
+- garantizar que si se va el jugador actual, el flujo continúe
+
+### Cliente
+
+- destacar visualmente el jugador actual de pista o voto
+- mostrar un bloque más claro de estado actual de ronda
+- impedir inputs cuando no corresponde
+
+### Contenido
+
+- revisar la lista de 200 jugadores para balance real entre casual, futbolero y hardcore
+
+---
+
+## 23) Estado del proyecto
+
+A esta altura el proyecto ya está en una zona buena:
+
+- idea cerrada
+- reglas definidas
+- MVP planteado
+- prioridades técnicas
+- camino claro para refactorizar sin romper todo
+
+Lo correcto ahora es seguir iterando como si fuera un desarrollo real:
+
+1. consolidar base
+2. probar
+3. corregir
+4. recién después embellecer y expandir
+
+---
+
+## 24) Fase 6 — plan de refactor técnico
+
+### Objetivo
+
+Reducir complejidad accidental y dejar el código listo para crecer sin volverse frágil.
+
+### Refactor recomendado en servidor
+
+#### A. Extraer helpers puros
+
+Conviene separar funciones puras para:
+
+- calcular máximo de impostores
+- validar pista
+- contar votos
+- detectar victoria
+- elegir futbolista según dificultad
+- construir orden de turnos
+
+Ventaja:
+
+- menos lógica mezclada con Socket.IO
+- más fácil de testear mentalmente y después automatizar
+
+#### B. Separar transición de fases
+
+Crear helpers dedicados a:
+
+- `goToCluePhase(room)`
+- `goToDebatePhase(room)`
+- `goToVotePhase(room)`
+- `goToRevealPhase(room)`
+- `goToNextRound(room)`
+- `endGame(room, winner, message)`
+
+Ventaja:
+
+- menos riesgo de estados imposibles
+- flujo más legible
+
+#### C. Normalizar el room state
+
+Definir que toda sala tenga siempre estos campos:
+
+- `phase`
+- `config`
+- `players`
+- `currentRound`
+- `currentFootballer`
+- `turnOrder`
+- `currentTurnIndex`
+- `voteOrder`
+- `currentVoteIndex`
+- `revealedClues`
+- `revealedVotes`
+- `timerEndsAt`
+- `message`
+- `commentatorMessage`
+- `gameOver`
+- `winner`
+
+Ventaja:
+
+- menor chance de nulls raros o ramas especiales innecesarias
+
+---
+
+## 25) Fase 6 — refactor del cliente
+
+### Objetivo
+
+Hacer que la UI dependa del estado del servidor y no de deducciones inestables.
+
+### Reglas recomendadas
+
+#### A. El cliente no decide lógica de juego
+
+El cliente solo debe:
+
+- renderizar lo que recibe
+- enviar acciones del usuario
+- mostrar feedback claro
+
+No debería decidir por sí mismo:
+
+- quién gana
+- cuándo cambia la fase
+- a quién le toca si no viene explícito del servidor
+
+#### B. Render por secciones
+
+Separar funciones de render para:
+
+- cabecera de sala
+- bloque secreto / futbolista
+- lista de jugadores
+- historial de pistas
+- panel de pista
+- panel de votación
+- chat de eliminados
+- mensajes de sistema
+
+#### C. Inputs defensivos
+
+Cada input debe quedar deshabilitado cuando no corresponde.
+
+Ejemplos:
+
+- input de pista solo cuando te toca
+- botones de voto solo cuando te toca
+- configuración solo si sos host y sigue en lobby
+
+---
+
+## 26) Fase 7 — matriz de riesgos del proyecto
+
+### Riesgo 1: partidas largas o lentas
+
+Causa:
+
+- demasiados jugadores
+- votación secuencial
+- tiempos muy altos
+
+Mitigación:
+
+- mantener máximo 12
+- tiempos por defecto sensatos
+- feedback visual claro para acelerar decisiones
+
+### Riesgo 2: pistas demasiado pobres
+
+Causa:
+
+- límite bajo de caracteres
+- jugadores que repiten demasiado
+
+Mitigación:
+
+- mantener la sospecha como parte del juego
+- luego evaluar si conviene subir a 40 caracteres en tests reales
+
+### Riesgo 3: desconexiones en momento crítico
+
+Causa:
+
+- cierre de pestaña o refresh
+
+Mitigación:
+
+- transición segura si se va el jugador actual
+- futura reconexión con token temporal
+
+### Riesgo 4: desbalance de dificultades
+
+Causa:
+
+- pool de jugadores mal curado
+
+Mitigación:
+
+- pruebas manuales de selección por dificultad
+- revisar ejemplos que resulten demasiado fáciles o absurdos
+
+### Riesgo 5: UI poco clara en juego real
+
+Causa:
+
+- demasiada información junta
+- poco destaque del turno actual
+
+Mitigación:
+
+- diseño visual más jerárquico
+- indicadores grandes de fase y turno
+
+---
+
+## 27) Fase 8 — decisiones de producto para testeo con amigos
+
+Cuando esta versión se pruebe con gente real, estas son las preguntas clave:
+
+### Sobre ritmo
+
+- ¿30 segundos por pista se siente bien?
+- ¿1 minuto de debate alcanza o sobra?
+- ¿la votación uno por uno se hace pesada o suma tensión?
+
+### Sobre dificultad
+
+- ¿casual realmente se siente casual?
+- ¿futbolero está bien ubicado en el medio?
+- ¿hardcore es desafiante sin ser injusto?
+
+### Sobre diversión
+
+- ¿las pistas repetidas generan sospecha divertida?
+- ¿el chat de eliminados ayuda a que nadie se aburra?
+- ¿el comentarista suma ambiente o estorba?
+
+### Sobre claridad
+
+- ¿siempre queda claro a quién le toca?
+- ¿queda claro quién sigue vivo?
+- ¿queda claro por qué terminó la partida?
+
+---
+
+## 28) Próximo bloque de trabajo ideal
+
+La secuencia más sana desde acá sería:
+
+### Paso 1
+
+Refactor liviano del servidor para limpiar transiciones.
+
+### Paso 2
+
+Ajustes del cliente para hacer más evidente turno y fase.
+
+### Paso 3
+
+Primera ronda de testeo manual con varias pestañas.
+
+### Paso 4
+
+Anotar bugs, fricciones y problemas de ritmo.
+
+### Paso 5
+
+Recién después entrar al pulido visual fuerte.
+
+---
+
+## 29) Criterio de desarrollo a mantener
+
+Para que este juego llegue a algo sólido, el criterio tiene que seguir siendo este:
+
+- no agregar complejidad por capricho
+- no confiar lógica sensible al cliente
+- no inflar features antes de probar base real
+- priorizar claridad, ritmo y estabilidad
+
+Ese criterio es el que más aumenta la probabilidad de que el proyecto termine siendo realmente jugable y no solo una maqueta linda.
+
+---
+
+## 30) Fase 9 — parche crítico recomendado
+
+La próxima mejora útil de verdad es aplicar un **parche técnico puntual** sobre la base actual.
+
+### Objetivo del parche
+
+Resolver tres debilidades de la versión actual:
+
+1. el cliente todavía infiere turnos desde `aliveOrder` y eso es frágil
+2. el servidor reinicia de forma poco limpia la ronda después de una eliminación
+3. una desconexión del jugador activo puede dejar el flujo raro
+
+---
+
+## 31) Cambios concretos que debería recibir el servidor
+
+### A. Enviar turnos explícitos al cliente
+
+El payload del room state debería incluir siempre:
+
+- `currentTurnPlayerId`
+- `currentVotePlayerId`
+
+Eso hace que el cliente no dependa de comparar nombres ni índices reconstruidos.
+
+### B. Mantener transición limpia después de eliminación
+
+Después de una eliminación, el flujo correcto es:
+
+1. eliminar jugador
+2. comprobar victoria
+3. si no termina la partida, empezar la siguiente ronda
+
+Nunca debería mezclarse con reseteos parciales ambiguos.
+
+### C. Desconexión durante turno activo
+
+Si se desconecta el jugador al que le toca:
+
+- en fase clue: saltar inmediatamente al siguiente turno válido
+- en fase vote: avanzar al siguiente voto válido
+
+Si la desconexión altera condición de victoria:
+
+- terminar partida correctamente
+
+---
+
+## 32) Cambios concretos que debería recibir el cliente
+
+### A. Render del turno actual basado en IDs
+
+El cliente debería leer:
+
+- `currentTurnPlayerId`
+- `currentVotePlayerId`
+
+Y con eso:
+
+- destacar al jugador actual
+- decidir si mostrar panel de pista
+- decidir si mostrar panel de voto
+
+### B. Mejor feedback visual
+
+Agregar señales claras de:
+
+- quién está actuando
+- en qué fase estamos
+- cuándo el jugador local debe intervenir
+
+### C. Inputs más defensivos
+
+El cliente debe bloquear por UI:
+
+- envío de pista si no te toca
+- voto si no te toca
+- cambios de configuración si no sos host o si ya empezó la partida
+
+---
+
+## 33) Refactor puntual sugerido sobre `server.js`
+
+### Helpers recomendados
+
+Conviene extraer o consolidar estas funciones:
+
+- `buildPublicState(room, viewerId)`
+- `currentCluePlayerId(room)`
+- `currentVotePlayerId(room)`
+- `tallyVotes(room)`
+- `endGame(room, winner, message)`
+- `startMatch(room)`
+- `startNextRound(room)`
+
+### Beneficio
+
+Con eso la lógica principal del socket queda más legible y menos propensa a errores de flujo.
+
+---
+
+## 34) Refactor puntual sugerido sobre `public/app.js`
+
+### Funciones que conviene dejar bien separadas
+
+- `renderHeader()`
+- `renderPlayers()`
+- `renderClues()`
+- `renderVotes()`
+- `renderCluePanel()`
+- `renderVotePanel()`
+- `renderDeadChat()`
+- `renderConfig()`
+
+### Beneficio
+
+Permite tocar UX sin romper otras partes del render.
+
+---
+
+## 35) Primer objetivo de testeo después del parche
+
+Una vez aplicado ese parche, la base debería soportar bien estas situaciones:
+
+### Caso 1
+
+Un jugador no responde durante su pista.
+
+Resultado esperado:
+
+- el turno se salta
+- el juego sigue
+- el cliente refleja el siguiente jugador activo
+
+### Caso 2
+
+Hay empate de votos.
+
+Resultado esperado:
+
+- se limpia la votación
+- sigue la misma fase
+- el primer votante vuelve a empezar
+
+### Caso 3
+
+Se desconecta el jugador al que le toca votar.
+
+Resultado esperado:
+
+- el flujo continúa sin romperse
+- no queda la sala trabada
+
+### Caso 4
+
+Se elimina un jugador y todavía no hay ganador.
+
+Resultado esperado:
+
+- comienza siguiente ronda
+- rota el jugador inicial
+- siguen solo los vivos
+
+### Caso 5
+
+Se desconecta el host durante la partida.
+
+Resultado esperado:
+
+- se reasigna host
+- la sala sigue funcionando
+
+---
+
+## 36) Estado ideal al terminar esta fase
+
+Si esta fase queda bien, el proyecto ya tendría:
+
+- base multijugador razonablemente estable
+- transiciones de ronda claras
+- cliente menos frágil
+- mejor soporte para pruebas reales con amigos
+
+Recién ahí conviene invertir más tiempo en:
+
+- pantallas intermedias
+- mejor look visual
+- contenido más rico
+- reconexión persistente
+
+---
+
+## 37) Próximo bloque de implementación recomendado
+
+El siguiente bloque técnico real debería ser:
+
+### Paso A
+
+Aplicar el refactor mínimo para turnos explícitos.
+
+### Paso B
+
+Aplicar el refactor mínimo para desconexiones durante clue/vote.
+
+### Paso C
+
+Actualizar el cliente para depender solo del estado enviado por servidor.
+
+### Paso D
+
+Recién después, mejorar el HUD.
+
+---
+
+## 38) Resumen operativo actual
+
+A esta altura ya no estamos definiendo el juego: estamos **consolidando el producto**.
+
+Lo que queda no es inventar nuevas reglas, sino:
+
+- fortalecer la implementación
+- reducir puntos frágiles
+- hacer más claro el flujo para el jugador
+- preparar el MVP para pruebas reales
+
+Ese es el trabajo correcto ahora mismo.
+
+---
+
+## 39) Fase 10 — parche técnico aplicable sobre la base actual
+
+A continuación dejo un parche concreto y razonable para aplicar sobre la base existente. No reemplaza todavía todo el proyecto, pero sí marca **cómo debe quedar la lógica crítica**.
+
+### Objetivo
+
+- hacer que el cliente no infiera turnos
+- dejar el flujo de ronda más limpio
+- reducir salas trabadas por desconexión o empate
+
+---
+
+## 40) Parche conceptual para `server.js`
+
+### A. El estado público debe incluir turnos explícitos
+
+En la función que arma el estado visible del room, el servidor debería exponer dos campos extra:
+
+```js
+const currentTurnPlayerId =
+  room.phase === 'clue' ? room.turnOrder[room.currentTurnIndex] || null : null;
+
+const currentVotePlayerId =
+  room.phase === 'vote' ? room.voteOrder[room.currentVoteIndex] || null : null;
+```
+
+Y devolverlos al cliente:
+
+```js
+return {
+  code: room.code,
+  phase: room.phase,
+  config: room.config,
+  currentRound: room.currentRound,
+  timerEndsAt: room.timerEndsAt,
+  message: room.message,
+  commentatorMessage: room.commentatorMessage,
+  footballer:
+    viewer && viewer.role === 'innocent' ? room.currentFootballer : null,
+  currentTurnPlayerId,
+  currentVotePlayerId,
+  gameOver: room.gameOver,
+  winner: room.winner,
+  players: room.players.map((p) => ({
+    id: p.id,
+    name: p.name,
+    alive: p.alive,
+    isHost: p.isHost,
+    clue: room.revealedClues[p.id] || '',
+    vote: room.revealedVotes[p.id] || null,
+  })),
+  deadChat: room.deadChat,
+};
+```
+
+### B. Helpers directos para turno actual
+
+```js
+function currentCluePlayerId(room) {
+  return room.turnOrder[room.currentTurnIndex] || null;
+}
+
+function currentVotePlayerId(room) {
+  return room.voteOrder[room.currentVoteIndex] || null;
+}
+```
+
+### C. Final de ronda limpio
+
+Después de votar:
+
+```js
+function resolveVoting(room) {
+  const winners = tallyVotes(room);
+
+  if (winners.length !== 1) {
+    room.players.forEach((p) => (p.vote = null));
+    room.revealedVotes = {};
+    room.currentVoteIndex = 0;
+    room.message = 'Empate en la votación. Se repite.';
+    room.commentatorMessage = 'Empate total. Se viene una nueva votación.';
+    broadcastRoom(room);
+    return;
+  }
+
+  applyElimination(room, winners[0]);
+
+  if (checkVictory(room)) {
+    broadcastRoom(room);
+    return;
+  }
+
+  setTimeout(() => {
+    startNextRound(room);
+  }, 1300);
+
+  broadcastRoom(room);
+}
+```
+
+### D. Desconexión del jugador activo
+
+En `disconnect`, después de sacar al jugador, conviene contemplar el caso especial:
+
+```js
+if (room.phase === 'clue' && currentCluePlayerId(room) === socket.id) {
+  room.message = 'El jugador activo se desconectó. Turno saltado.';
+  advanceClueTurn(room);
+  return;
+}
+
+if (room.phase === 'vote' && currentVotePlayerId(room) === socket.id) {
+  room.message = 'El votante actual se desconectó. Se avanza al siguiente.';
+  room.currentVoteIndex += 1;
+
+  if (room.currentVoteIndex >= room.voteOrder.length) {
+    resolveVoting(room);
+  } else {
+    broadcastRoom(room);
+  }
+  return;
+}
+```
+
+Ese caso puntual evita que una sala se quede clavada esperando a alguien que ya no existe.
+
+---
+
+## 41) Parche conceptual para `public/app.js`
+
+### A. El cliente debe dejar de deducir por nombres
+
+En vez de reconstruir el turno actual con `aliveOrder`, hay que usar directamente:
+
+```js
+function isMyClueTurn() {
+  return (
+    state.room?.phase === 'clue' &&
+    state.room.currentTurnPlayerId === state.myId
+  );
+}
+
+function isMyVoteTurn() {
+  return (
+    state.room?.phase === 'vote' &&
+    state.room.currentVotePlayerId === state.myId
+  );
+}
+```
+
+### B. Marcado visual del jugador activo
+
+```js
+const turnMarker =
+  player.id === state.room.currentTurnPlayerId
+    ? '🎤'
+    : player.id === state.room.currentVotePlayerId
+      ? '🗳️'
+      : '';
+```
+
+### C. Panels totalmente dependientes del estado real
+
+```js
+function renderCluePanel() {
+  $('#cluePanel').classList.toggle('hidden', !isMyClueTurn());
+}
+
+function renderVotePanel() {
+  const panel = $('#votePanel');
+  const wrap = $('#voteTargets');
+  wrap.innerHTML = '';
+
+  if (!isMyVoteTurn()) {
+    panel.classList.add('hidden');
+    return;
+  }
+
+  panel.classList.remove('hidden');
+  const me = getMyPlayer();
+
+  state.room.players
+    .filter((p) => p.alive && p.id !== me.id)
+    .forEach((player) => {
+      const btn = document.createElement('button');
+      btn.className = 'vote-btn';
+      btn.textContent = `Votar a ${player.name}`;
+      btn.onclick = () => {
+        socket.emit('vote:submit', {
+          code: state.room.code,
+          targetId: player.id,
+        });
+      };
+      wrap.appendChild(btn);
+    });
+}
+```
+
+---
+
+## 42) Qué debería pasar después de aplicar este parche
+
+### Resultado esperado
+
+- el cliente ya no depende de reconstruir turnos de forma frágil
+- clue y vote quedan más confiables
+- una desconexión durante turno activo deja menos chances de sala trabada
+- el flujo general se vuelve bastante más predecible
+
+### Lo que todavía no resolvería del todo
+
+- reconexión persistente real
+- restauración de sesión por token
+- persistencia temporal de sala
+- modulado completo del código por carpetas de dominio
+
+Pero sí dejaría una base bastante más seria.
+
+---
+
+## 43) Fase 11 — siguiente mejora de UX después del parche
+
+Una vez aplicado el parche técnico, el siguiente movimiento inteligente sería un **mini pulido visual de alto impacto**:
+
+### A. Estado de turno más fuerte
+
+- borde brillante en el jugador activo
+- cartel principal de “te toca dar pista”
+- cartel principal de “te toca votar”
+
+### B. Separación de mensajes
+
+- mensaje del sistema en una zona clara
+- comentarista en otra, con estilo más liviano
+
+### C. Fin de ronda más claro
+
+- cartel con eliminado
+- transición breve antes de la siguiente ronda
+- mensaje de condición de victoria si la partida termina
+
+Estas mejoras cambian mucho la sensación del juego sin meter complejidad innecesaria.
+
+---
+
+## 44) Prioridad correcta a partir de acá
+
+El orden que más sentido tiene seguir es:
+
+1. aplicar parche técnico de turnos y desconexión
+2. probar con varias pestañas
+3. corregir bugs reales que aparezcan
+4. recién ahí mejorar HUD y presentación
+5. después pensar reconexión persistente
+
+---
+
+## 45) Cierre de esta iteración
+
+El proyecto ya está en una etapa donde cada mejora suma de verdad.
+
+Antes estábamos definiendo qué queríamos construir.
+Ahora estamos en la parte más importante de un producto real:
+**hacer que no se rompa y que se entienda bien al jugarlo**.
+
+Ese cambio de etapa es buena señal.
+
+---
+
+## 46) Fase 12 — propuesta de modularización mínima
+
+Antes de seguir escalando, conviene preparar una estructura de proyecto un poco más sana. No hace falta volverlo enorme, pero sí evitar que `server.js` termine siendo un bloque inmanejable.
+
+### Estructura sugerida para la siguiente versión
+
+```text
+impostor-futbolistas/
+  package.json
+  server.js
+  /src
+    /data
+      footballers.js
+    /game
+      roomFactory.js
+      gameFlow.js
+      validators.js
+      commentator.js
+      roomState.js
+  /public
+    index.html
+    styles.css
+    app.js
+```
+
+### Qué iría en cada archivo
+
+#### `src/data/footballers.js`
+
+- exporta la base de futbolistas
+- separa casual, futbolero y hardcore
+- facilita futuras curaciones
+
+#### `src/game/commentator.js`
+
+- frases de ambientación
+- helper `pickComment(phase)`
+
+#### `src/game/validators.js`
+
+- validación de nombres
+- validación de pistas
+- límites de configuración del host
+
+#### `src/game/roomFactory.js`
+
+- crea una sala nueva con estado limpio
+- crea jugadores con estructura estándar
+
+#### `src/game/roomState.js`
+
+- construye el estado público que ve cada cliente
+- expone `buildPublicState(room, viewerId)`
+
+#### `src/game/gameFlow.js`
+
+- helpers de rondas
+- elección de futbolista
+- asignación de roles
+- turnos
+- votación
+- victoria
+
+---
+
+## 47) Ventaja real de modularizar ahora
+
+No es solo estética. Modularizar esta parte trae ventajas reales:
+
+- reduce errores al tocar reglas delicadas
+- hace más fácil testear funciones aisladas
+- permite mejorar UI sin tocar tanto el flujo del juego
+- facilita que otra IA o desarrollador entienda el proyecto
+
+En un juego con salas, turnos y fases, eso vale muchísimo.
+
+---
+
+## 48) Fase 13 — helpers críticos que conviene formalizar
+
+Estas funciones ya merecen existir como piezas separadas y estables:
+
+### Sobre jugadores y salas
+
+- `createPlayer(socket, name)`
+- `createRoom(hostSocket, hostName)`
+- `joinRoom(socket, code, playerName)`
+- `removePlayerFromRoom(room, socketId)`
+
+### Sobre fútbol y dificultad
+
+- `chooseFootballer(room)`
+- `filterFootballersByDifficulty(difficulty)`
+- `avoidRecentFootballers(room, pool)`
+
+### Sobre turnos
+
+- `getAlivePlayers(room)`
+- `getAliveTurnOrder(room)`
+- `currentCluePlayerId(room)`
+- `currentVotePlayerId(room)`
+- `advanceClueTurn(room)`
+
+### Sobre votación
+
+- `tallyVotes(room)`
+- `resolveVoting(room)`
+- `applyElimination(room, playerId)`
+
+### Sobre victoria
+
+- `checkVictory(room)`
+- `endGame(room, winner, message)`
+
+### Sobre payload al cliente
+
+- `buildPublicState(room, viewerId)`
+- `broadcastRoom(io, room)`
+
+---
+
+## 49) Fase 14 — estados del juego que deben quedar cerrados
+
+La máquina de estados tiene que quedar simple y firme. Cuantos menos caminos raros tenga, mejor.
+
+### Estados válidos
+
+- `lobby`
+- `round-start`
+- `clue`
+- `debate`
+- `vote`
+- `gameover`
+
+### Transiciones válidas
+
+```text
+lobby -> round-start
+round-start -> clue
+clue -> debate
+clue -> debate (si se terminan los turnos)
+debate -> vote
+vote -> vote (si hay empate)
+vote -> round-start (si no terminó la partida)
+vote -> gameover (si hubo victoria)
+```
+
+### Qué no debería pasar nunca
+
+- volver a `lobby` desde una partida activa
+- pasar de `clue` directo a `gameover` sin chequeo válido
+- reiniciar jugadores vivos por error en mitad de partida
+- dejar `currentTurnIndex` o `currentVoteIndex` apuntando a alguien inexistente
+
+---
+
+## 50) Fase 15 — errores que conviene prevenir explícitamente
+
+### Cliente
+
+- intentar mandar pista fuera de turno
+- intentar votar fuera de turno
+- intentar votar a un jugador eliminado
+- intentar editar configuración sin ser host
+- intentar iniciar partida sin jugadores suficientes
+
+### Servidor
+
+- aceptar pista de socket equivocado
+- aceptar voto de socket equivocado
+- permitir más impostores del límite
+- aceptar pista con nombre o apellido
+- quedar con sala vacía sin limpiarla
+- seguir esperando turno de un jugador desconectado
+
+---
+
+## 51) Fase 16 — mejoras de claridad para el jugador
+
+Sin tocar todavía el estilo final, estas mejoras tendrían alto valor:
+
+### A. Header más informativo
+
+Mostrar en la parte superior:
+
+- código de sala
+- ronda actual
+- fase actual
+- temporizador
+- mensaje del sistema
+- comentario del narrador
+
+### B. Centro de atención visual
+
+La pantalla debe dejar clarísimo:
+
+- si sos inocente o impostor por la ausencia/presencia del nombre del futbolista
+- cuándo te toca actuar
+- qué ya dijeron los demás
+
+### C. Lado derecho como panel de seguimiento
+
+Ideal para:
+
+- votos emitidos
+- chat de eliminados
+- evento reciente de la sala
+
+---
+
+## 52) Fase 17 — ideas de pulido visual que sí valen la pena
+
+Cuando la base esté estable, estas mejoras sí justifican el tiempo:
+
+- resaltar turno actual con borde y glow
+- transición breve entre ronda y ronda
+- cartel de eliminado con animación suave
+- mejor contraste para pistas y votos
+- iconografía simple para vivo, eliminado, host, turno de pista, turno de voto
+
+Estas mejoras son más valiosas que agregar features enormes, porque mejoran directamente la experiencia.
+
+---
+
+## 53) Fase 18 — plan de pruebas por escenarios reales
+
+### Escenario 1 — partida estándar de 5 jugadores
+
+- crear sala
+- configurar 1 impostor
+- jugar una ronda completa
+- comprobar flujo clue -> debate -> vote -> siguiente ronda
+
+### Escenario 2 — empate
+
+- provocar empate de votos
+- verificar repetición limpia de la fase de voto
+
+### Escenario 3 — pista inválida
+
+- mandar una pista con nombre
+- comprobar rechazo del servidor
+- comprobar que el turno no avance por error
+
+### Escenario 4 — desconexión en clue
+
+- desconectar la pestaña del jugador activo
+- verificar que el turno se salte sin romper la sala
+
+### Escenario 5 — desconexión en vote
+
+- desconectar al votante actual
+- verificar que se avance o se resuelva la votación correctamente
+
+### Escenario 6 — victoria impostora
+
+- reducir la partida hasta igualdad de impostores e inocentes
+- comprobar final automático
+
+### Escenario 7 — cambio de host
+
+- desconectar al host en lobby
+- desconectarlo en partida
+- verificar que otro jugador tome el control
+
+---
+
+## 54) Fase 19 — criterio de contenido para la base de futbolistas
+
+La base hoy es funcional, pero más adelante convendría curarla con criterio uniforme.
+
+### Para cada futbolista sería ideal guardar
+
+- `name`
+- `difficulty`
+- `era`
+- `active` (true/false)
+- `region`
+- `tags` opcionales
+
+Ejemplo:
+
+```js
+{
+  name: 'Lautaro Martinez',
+  difficulty: 'futbolero',
+  era: 'actual',
+  active: true,
+  region: 'sudamerica',
+  tags: ['delantero', 'argentina', 'inter']
+}
+```
+
+Esto hoy no es obligatorio, pero abriría muchísimas puertas después.
+
+---
+
+## 55) Fase 20 — roadmap corto y sensato
+
+### Ya hecho
+
+- concepto cerrado
+- reglas cerradas
+- MVP base
+- arquitectura inicial razonable
+- plan de endurecimiento
+- parche técnico conceptual
+
+### Lo siguiente
+
+1. aplicar parche real de turnos explícitos y desconexión
+2. modularizar mínimamente el servidor
+3. probar con varias pestañas
+4. corregir bugs encontrados
+5. mejorar HUD y feedback visual
+
+### Lo posterior
+
+- reconexión persistente
+- contenido más rico
+- más polish visual
+- quizás resumen de ronda y sonidos
+
+---
+
+## 56) Estado actual del proyecto
+
+A esta altura, el proyecto ya no necesita más invención de reglas. Necesita **ejecución disciplinada**.
+
+El trabajo correcto desde acá es:
+
+- limpiar implementación
+- probar
+- corregir
+- recién después embellecer
+
+Ese camino es el que más chances tiene de terminar en un juego que realmente puedas abrir con amigos, jugar y disfrutar.
+
+---
+
+## 57) Fase 21 — parche real listo para aplicar
+
+Ahora sí, dejo un parche **más concreto y aplicable** sobre la base actual. La idea es no rehacer todo de golpe, sino corregir los puntos más frágiles.
+
+### Objetivos de este parche
+
+- dejar de depender de `aliveOrder` en cliente
+- enviar turnos explícitos desde servidor
+- limpiar el flujo post-votación
+- tolerar mejor desconexiones del jugador activo
+
+---
+
+## 58) Reemplazo recomendado de `publicRoomState` en `server.js`
+
+Reemplazá la función actual por esta:
+
+```js
+function publicRoomState(room, viewerId) {
+  const viewer = room.players.find((p) => p.id === viewerId);
+  const currentTurnPlayerId =
+    room.phase === 'clue'
+      ? room.turnOrder[room.currentTurnIndex] || null
+      : null;
+  const currentVotePlayerId =
+    room.phase === 'vote'
+      ? room.voteOrder[room.currentVoteIndex] || null
+      : null;
+
+  return {
+    code: room.code,
+    phase: room.phase,
+    config: room.config,
+    currentRound: room.currentRound,
+    currentTurnIndex: room.currentTurnIndex,
+    currentVoteIndex: room.currentVoteIndex,
+    roundStarterIndex: room.roundStarterIndex,
+    timerEndsAt: room.timerEndsAt,
+    message: room.message,
+    commentatorMessage: room.commentatorMessage,
+    footballer:
+      viewer && viewer.role === 'innocent' ? room.currentFootballer : null,
+    currentTurnPlayerId,
+    currentVotePlayerId,
+    players: room.players.map((p) => ({
+      id: p.id,
+      name: p.name,
+      alive: p.alive,
+      isHost: p.isHost,
+      clue: room.revealedClues[p.id] || '',
+      vote: room.revealedVotes[p.id] || null,
+    })),
+    eliminated: room.players
+      .filter((p) => !p.alive)
+      .map((p) => ({ id: p.id, name: p.name })),
+    deadChat: room.deadChat,
+    gameOver: room.gameOver,
+    winner: room.winner,
+  };
+}
+```
+
+---
+
+## 59) Helpers nuevos para `server.js`
+
+Agregá estos helpers debajo de `currentVotePlayer`:
+
+```js
+function tallyVotes(room) {
+  const tally = new Map();
+
+  room.players
+    .filter((p) => p.alive)
+    .forEach((p) => {
+      if (p.vote) {
+        tally.set(p.vote, (tally.get(p.vote) || 0) + 1);
+      }
+    });
+
+  let maxVotes = 0;
+  let winners = [];
+
+  for (const [id, count] of tally.entries()) {
+    if (count > maxVotes) {
+      maxVotes = count;
+      winners = [id];
+    } else if (count === maxVotes) {
+      winners.push(id);
+    }
+  }
+
+  return winners;
+}
+
+function resolveVoting(room) {
+  const winners = tallyVotes(room);
+
+  if (winners.length !== 1) {
+    room.message = 'Empate en la votación. Se repite.';
+    room.players.forEach((p) => (p.vote = null));
+    room.revealedVotes = {};
+    room.currentVoteIndex = 0;
+    room.commentatorMessage = 'Empate total. Se viene una nueva votación.';
+    broadcastRoom(room);
+    return;
+  }
+
+  applyElimination(room, winners[0]);
+
+  if (checkVictory(room)) {
+    broadcastRoom(room);
+    return;
+  }
+
+  resetRoundFields(room);
+  setTimeout(() => {
+    startRound(room);
+  }, 1400);
+
+  broadcastRoom(room);
+}
+```
+
+Esto saca lógica duplicada del evento `vote:submit`.
+
+---
+
+## 60) Reemplazo del bloque final de `vote:submit`
+
+Dentro del evento `vote:submit`, reemplazá este bloque:
+
+```js
+if (room.currentVoteIndex >= room.voteOrder.length) {
+  const tally = new Map();
+  room.players
+    .filter((p) => p.alive)
+    .forEach((p) => {
+      if (p.vote) tally.set(p.vote, (tally.get(p.vote) || 0) + 1);
+    });
+
+  let maxVotes = 0;
+  let winners = [];
+  for (const [id, count] of tally.entries()) {
+    if (count > maxVotes) {
+      maxVotes = count;
+      winners = [id];
+    } else if (count === maxVotes) {
+      winners.push(id);
+    }
+  }
+
+  if (winners.length !== 1) {
+    room.message = 'Empate en la votación. Se repite.';
+    room.players.forEach((p) => (p.vote = null));
+    room.revealedVotes = {};
+    room.currentVoteIndex = 0;
+    room.commentatorMessage = 'Empate total. Se viene una nueva votación.';
+    broadcastRoom(room);
+    return;
+  }
+
+  applyElimination(room, winners[0]);
+  if (checkVictory(room)) {
+    broadcastRoom(room);
+    return;
+  }
+
+  resetRoundFields(room);
+  setTimeout(() => {
+    startRound(room);
+  }, 1400);
+  broadcastRoom(room);
+  return;
+}
+```
+
+por este:
+
+```js
+if (room.currentVoteIndex >= room.voteOrder.length) {
+  resolveVoting(room);
+  return;
+}
+```
+
+---
+
+## 61) Manejo de desconexión del jugador activo
+
+Dentro de `disconnect`, después de actualizar `room.message`, agregá este bloque antes del `broadcastRoom(room)` final:
+
+```js
+if (room.phase === 'clue' && currentCluePlayer(room) === socket.id) {
+  room.message = 'El jugador activo se desconectó. Turno saltado.';
+  room.commentatorMessage = 'La ronda sigue pese a la desconexión.';
+  advanceClueTurn(room);
+  return;
+}
+
+if (room.phase === 'vote' && currentVotePlayer(room) === socket.id) {
+  room.message = 'El votante actual se desconectó. Se avanza al siguiente.';
+  room.commentatorMessage = 'La votación continúa.';
+  room.currentVoteIndex += 1;
+
+  if (room.currentVoteIndex >= room.voteOrder.length) {
+    resolveVoting(room);
+  } else {
+    broadcastRoom(room);
+  }
+  return;
+}
+```
+
+Con esto evitás que la sala quede esperando una acción imposible.
+
+---
+
+## 62) Reemplazo recomendado en `public/app.js`
+
+### A. Reemplazá `isMyTurnForClue()` por:
+
+```js
+function isMyTurnForClue() {
+  return (
+    state.room?.phase === 'clue' &&
+    state.room.currentTurnPlayerId === state.myId
+  );
+}
+```
+
+### B. Reemplazá `isMyTurnForVote()` por:
+
+```js
+function isMyTurnForVote() {
+  return (
+    state.room?.phase === 'vote' &&
+    state.room.currentVotePlayerId === state.myId
+  );
+}
+```
+
+---
+
+## 63) Mejora inmediata de `renderPlayers()`
+
+Reemplazá `renderPlayers()` por esta versión:
+
+```js
+function renderPlayers() {
+  const wrap = $('#playersList');
+  wrap.innerHTML = '';
+
+  for (const player of state.room.players) {
+    const div = document.createElement('div');
+    const isClueTurn = player.id === state.room.currentTurnPlayerId;
+    const isVoteTurn = player.id === state.room.currentVotePlayerId;
+    div.className = `player ${player.alive ? '' : 'dead'} ${isClueTurn || isVoteTurn ? 'active-turn' : ''}`;
+
+    const marker = isClueTurn ? '🎤' : isVoteTurn ? '🗳️' : '';
+
+    div.innerHTML = `
+      <strong>${player.name}</strong>
+      ${player.isHost ? '<span class="tag">HOST</span>' : '<span></span>'}
+      <span>${player.alive ? '🟢' : '⚪'} ${marker}</span>
+    `;
+
+    wrap.appendChild(div);
+  }
+}
+```
+
+---
+
+## 64) Mini parche de UX en `styles.css`
+
+Agregá esta clase al final del archivo:
+
+```css
+.player.active-turn {
+  border: 1px solid rgba(87, 199, 255, 0.7);
+  box-shadow:
+    0 0 0 1px rgba(87, 199, 255, 0.25),
+    0 0 18px rgba(87, 199, 255, 0.12);
+}
+```
+
+Es simple, pero ya deja mucho más claro a quién le toca.
+
+---
+
+## 65) Resultado esperado después de aplicar este parche
+
+Si aplicás lo de esta fase, deberías notar estas mejoras inmediatas:
+
+- el cliente deja de adivinar turnos usando nombres
+- los turnos de pista y voto se vuelven más confiables
+- una desconexión del jugador activo deja menos chances de trabar la sala
+- el código de votación queda un poco más limpio
+- el jugador actual queda visualmente más claro
+
+---
+
+## 66) Lo siguiente después de este parche
+
+Después de aplicar y probar esto, el paso correcto sería:
+
+1. testear con varias pestañas
+2. anotar bugs reales
+3. recién ahí hacer un refactor más grande a módulos
+4. después meter pulido visual adicional
+
+No conviene modularizar a ciegas antes de confirmar que este parche ya estabilizó la base.
+
+---
+
+## 67) Cierre de la fase actual
+
+Con esta fase ya dejamos de hablar solo de ideas o backlog y pasamos a **intervenciones concretas sobre el código**.
+
+Ese es el avance correcto: cada iteración ahora debería mover el proyecto un poco más cerca de una versión realmente jugable, estable y fácil de entender.
+
+---
+
+## 68) Fase siguiente — cambios concretos adicionales
+
+Después del parche anterior, los siguientes cambios útiles son estos:
+
+### A. Agregar una fase breve de reveal
+
+Ahora mismo, después de votar y eliminar, el juego salta rápido a la siguiente ronda. Conviene agregar una fase breve intermedia.
+
+Beneficios:
+
+- el jugador entiende mejor qué pasó
+- la eliminación se siente más clara
+- se puede mostrar si el eliminado era impostor o inocente
+
+### B. Separar mejor mensajes de ronda
+
+Conviene que el sistema tenga un mensaje claro de:
+
+- inicio de ronda
+- fase de pistas
+- debate
+- votación
+- eliminación
+- victoria
+
+### C. Mostrar rol del eliminado al revelarlo
+
+Esto mejora muchísimo la lectura del juego.
+
+---
+
+## 69) Cambio recomendado en `server.js` — fase `reveal`
+
+### Paso 1
+
+En `applyElimination(room, playerId)`, reemplazá la parte final por esto:
+
+```js
+function applyElimination(room, playerId) {
+  const target = room.players.find((p) => p.id === playerId);
+  if (!target) return null;
+
+  target.alive = false;
+  room.phase = 'reveal';
+  room.message = `${target.name} fue eliminado/a.`;
+  room.commentatorMessage = pick(commentator.reveal);
+  room.lastEliminated = {
+    id: target.id,
+    name: target.name,
+    role: target.role,
+  };
+
+  return target;
+}
+```
+
+### Paso 2
+
+En la creación inicial del room, agregá este campo:
+
+```js
+lastEliminated: null,
+```
+
+### Paso 3
+
+En `resetRoundFields(room)`, no borres `lastEliminated` todavía. Solo resetealo cuando empiece una nueva ronda:
+
+```js
+function resetRoundFields(room) {
+  room.players.forEach((p) => {
+    p.clue = '';
+    p.vote = null;
+  });
+  room.revealedClues = {};
+  room.revealedVotes = {};
+}
+```
+
+Y en `prepareRound(room)` agregá al comienzo:
+
+```js
+room.lastEliminated = null;
+```
+
+---
+
+## 70) Exponer el eliminado al cliente
+
+Dentro de `publicRoomState(room, viewerId)`, agregá este campo al objeto retornado:
+
+```js
+lastEliminated: room.lastEliminated,
+```
+
+---
+
+## 71) Ajuste en `resolveVoting(room)`
+
+Reemplazá la parte final por esta versión:
+
+```js
+function resolveVoting(room) {
+  const winners = tallyVotes(room);
+
+  if (winners.length !== 1) {
+    room.message = 'Empate en la votación. Se repite.';
+    room.players.forEach((p) => (p.vote = null));
+    room.revealedVotes = {};
+    room.currentVoteIndex = 0;
+    room.commentatorMessage = 'Empate total. Se viene una nueva votación.';
+    broadcastRoom(room);
+    return;
+  }
+
+  applyElimination(room, winners[0]);
+
+  if (checkVictory(room)) {
+    broadcastRoom(room);
+    return;
+  }
+
+  broadcastRoom(room);
+
+  setTimeout(() => {
+    startRound(room);
+  }, 1800);
+}
+```
+
+Eso deja una mini pausa para que se vea el resultado antes de saltar de ronda.
+
+---
+
+## 72) Mejora de UX en cliente para la fase reveal
+
+En `public/app.js`, dentro de `renderRoom()`, después de actualizar `#secretFootballer`, agregá este bloque:
+
+```js
+if (state.room.phase === 'reveal' && state.room.lastEliminated) {
+  const r = state.room.lastEliminated;
+  $('#roomMessage').textContent =
+    `${r.name} fue eliminado/a. Era ${r.role === 'impostor' ? 'IMPOSTOR' : 'INOCENTE'}.`;
+}
+```
+
+Con eso, la fase se vuelve mucho más comprensible.
+
+---
+
+## 73) Mejora visual recomendada en `styles.css`
+
+Agregá al final:
+
+```css
+.phase-reveal {
+  border: 1px solid rgba(125, 255, 179, 0.35);
+  box-shadow: 0 0 24px rgba(125, 255, 179, 0.08);
+}
+```
+
+Y en `renderRoom()` podés marcar la card principal según fase:
+
+```js
+const hero = document.querySelector('.hero');
+hero.classList.toggle('phase-reveal', state.room.phase === 'reveal');
+```
+
+---
+
+## 74) Cambio recomendado — endurecer validación de voto
+
+En `vote:submit`, además de comprobar que el target esté vivo, conviene impedir votar si el votante ya votó.
+
+Agregá esta validación:
+
+```js
+if (voter.vote) return;
+```
+
+Quedaría así:
+
+```js
+const voter = room.players.find((p) => p.id === socket.id);
+const target = room.players.find((p) => p.id === targetId);
+if (!voter || !voter.alive || !target || !target.alive) return;
+if (voter.vote) return;
+```
+
+Eso bloquea dobles envíos por doble click o latencia.
+
+---
+
+## 75) Cambio recomendado — endurecer validación de pista
+
+En `clue:submit`, además de validar texto, conviene impedir enviar dos veces:
+
+```js
+if (player.clue) return;
+```
+
+Quedaría así:
+
+```js
+const player = room.players.find((p) => p.id === socket.id);
+if (!player || !player.alive) return;
+if (player.clue) return;
+```
+
+Eso evita dobles envíos si el usuario hace click varias veces.
+
+---
+
+## 76) Mini mejora para el cliente: desactivar botones al enviar
+
+### En `public/app.js`
+
+Reemplazá el `onclick` de `#sendClueBtn` por:
+
+```js
+$('#sendClueBtn').onclick = () => {
+  const btn = $('#sendClueBtn');
+  const clue = $('#clueInput').value.trim();
+  if (!clue) return;
+  btn.disabled = true;
+  socket.emit('clue:submit', { code: state.room.code, clue });
+  $('#clueInput').value = '';
+  setTimeout(() => {
+    btn.disabled = false;
+  }, 500);
+};
+```
+
+Y para el voto, dentro de `renderVotePanel()`, antes del emit del botón:
+
+```js
+btn.onclick = () => {
+  wrap.querySelectorAll('button').forEach((b) => (b.disabled = true));
+  socket.emit('vote:submit', { code: state.room.code, targetId: player.id });
+};
+```
+
+---
+
+## 77) Test manual recomendado después de estos cambios
+
+Después de aplicar esta fase, conviene probar esto sí o sí:
+
+### Reveal
+
+- votar a alguien
+- comprobar que se vea un momento de reveal
+- comprobar que se muestre si era impostor o inocente
+
+### Anti doble envío
+
+- hacer doble click en enviar pista
+- hacer doble click en votar
+- comprobar que el servidor no duplique acciones
+
+### Continuidad
+
+- comprobar que después del reveal arranque la nueva ronda
+- comprobar que si había condición de victoria, termine correctamente sin nueva ronda
+
+---
+
+## 78) Qué mejora aporta esta fase
+
+Con estos cambios, el juego gana tres cosas muy valiosas:
+
+1. **más claridad** para los jugadores
+2. **menos errores por doble input**
+3. **mejor ritmo** entre votación y siguiente ronda
+
+Eso parece pequeño, pero en un party game cambia muchísimo la sensación de calidad.
+
+---
+
+## 79) Próxima mejora recomendable después de esta fase
+
+Una vez aplicada esta etapa, lo siguiente más útil sería una de estas dos cosas:
+
+### Opción A — robustez final
+
+- reconexión temporal
+- ids de jugador persistentes por sesión
+- recuperación de sala al refrescar
+
+### Opción B — limpieza de código
+
+- separar servidor en módulos
+- separar data de futbolistas
+- separar helpers de fases
+
+Si el objetivo es jugarlo pronto con amigos, primero conviene **robustez final**. Si el objetivo es seguir desarrollándolo por tiempo largo, conviene **modularizar**.
+
+---
+
+## 80) Fase de robustez final — objetivo
+
+El problema más molesto que queda en un juego web multijugador de este tipo es este:
+
+- un jugador refresca la página
+- cambia su `socket.id`
+- el servidor lo trata como una persona nueva o lo pierde
+- la sala puede quedar inconsistente
+
+Para que el MVP sea realmente testeable con amigos, hay que soportar **reconexión temporal por sesión**.
+
+La solución más razonable para este proyecto es:
+
+- generar un `sessionPlayerId` persistido en `localStorage`
+- mandar ese identificador al servidor al crear o unirse
+- guardar ese id en cada jugador del room state
+- si el jugador vuelve a conectarse, re-vincular el nuevo socket a ese jugador existente
+- permitir recuperación automática si la sala sigue viva
+
+Esto no es autenticación real. Es una **persistencia liviana de sesión**, suficiente para el MVP.
+
+---
+
+## 81) Cambio de modelo de jugador en `server.js`
+
+### Reemplazá `createPlayer(socket, name)` por:
+
+```js
+function createPlayer(socket, name, sessionPlayerId) {
+  return {
+    id: socket.id,
+    sessionPlayerId,
+    name,
+    alive: true,
+    isHost: false,
+    role: 'innocent',
+    clue: '',
+    vote: null,
+    connected: true,
+    disconnectedAt: null,
+  };
+}
+```
+
+Con esto diferenciás:
+
+- `id`: socket actual
+- `sessionPlayerId`: identidad persistente del jugador en esa sesión
+
+---
+
+## 82) Funciones nuevas para reconexión
+
+Agregá estos helpers en `server.js`:
+
+```js
+function findPlayerBySessionId(room, sessionPlayerId) {
+  return (
+    room.players.find((p) => p.sessionPlayerId === sessionPlayerId) || null
+  );
+}
+
+function reattachPlayerSocket(room, player, socket) {
+  const previousSocketId = player.id;
+  player.id = socket.id;
+  player.connected = true;
+  player.disconnectedAt = null;
+
+  socket.join(room.code);
+
+  if (room.hostId === previousSocketId) {
+    room.hostId = socket.id;
+  }
+
+  room.players.forEach((p) => {
+    p.isHost = p.id === room.hostId;
+  });
+
+  for (let i = 0; i < room.turnOrder.length; i++) {
+    if (room.turnOrder[i] === previousSocketId) {
+      room.turnOrder[i] = socket.id;
+    }
+  }
+
+  for (let i = 0; i < room.voteOrder.length; i++) {
+    if (room.voteOrder[i] === previousSocketId) {
+      room.voteOrder[i] = socket.id;
+    }
+  }
+
+  if (room.revealedClues[previousSocketId]) {
+    room.revealedClues[socket.id] = room.revealedClues[previousSocketId];
+    delete room.revealedClues[previousSocketId];
+  }
+
+  if (room.revealedVotes[previousSocketId]) {
+    room.revealedVotes[socket.id] = room.revealedVotes[previousSocketId];
+    delete room.revealedVotes[previousSocketId];
+  }
+}
+
+function markPlayerDisconnected(room, player) {
+  player.connected = false;
+  player.disconnectedAt = Date.now();
+}
+```
+
+---
+
+## 83) Crear sala y unirse con `sessionPlayerId`
+
+### Reemplazá el evento `room:create` por:
+
+```js
+socket.on('room:create', ({ name, sessionPlayerId }) => {
+  if (!name?.trim()) {
+    socket.emit('app:error', 'Tenés que ingresar un nombre.');
+    return;
+  }
+  if (!sessionPlayerId?.trim()) {
+    socket.emit('app:error', 'Falta identificador de sesión.');
+    return;
+  }
+  createRoom(socket, name.trim(), sessionPlayerId.trim());
+});
+```
+
+### Reemplazá el evento `room:join` por:
+
+```js
+socket.on('room:join', ({ code, name, sessionPlayerId }) => {
+  if (!name?.trim() || !code?.trim() || !sessionPlayerId?.trim()) {
+    socket.emit('app:error', 'Código, nombre e id de sesión son obligatorios.');
+    return;
+  }
+  const result = joinRoom(
+    socket,
+    code.trim().toUpperCase(),
+    name.trim(),
+    sessionPlayerId.trim()
+  );
+  if (result?.error) socket.emit('app:error', result.error);
+});
+```
+
+---
+
+## 84) Reemplazo de `createRoom` y `joinRoom`
+
+### `createRoom`
+
+```js
+function createRoom(socket, playerName, sessionPlayerId) {
+  let code = makeId();
+  while (rooms.has(code)) code = makeId();
+
+  const player = createPlayer(socket, playerName, sessionPlayerId);
+  player.isHost = true;
+
+  const room = {
+    code,
+    hostId: socket.id,
+    players: [player],
+    phase: 'lobby',
+    config: {
+      difficulty: 'casual',
+      impostors: 1,
+      clueSeconds: 30,
+      debateSeconds: 60,
+      maxRounds: 10,
+    },
+    currentRound: 0,
+    currentFootballer: null,
+    recentFootballers: [],
+    currentTurnIndex: 0,
+    currentVoteIndex: 0,
+    roundStarterIndex: -1,
+    turnOrder: [],
+    voteOrder: [],
+    revealedClues: {},
+    revealedVotes: {},
+    timerEndsAt: null,
+    timeout: null,
+    message: 'Sala creada.',
+    commentatorMessage: pick(commentator.lobby),
+    deadChat: [],
+    gameOver: false,
+    winner: null,
+    lastEliminated: null,
+  };
+
+  rooms.set(code, room);
+  socket.join(code);
+  broadcastRoom(room);
+}
+```
+
+### `joinRoom`
+
+```js
+function joinRoom(socket, code, playerName, sessionPlayerId) {
+  const room = rooms.get(code);
+  if (!room) return { error: 'Sala inexistente.' };
+
+  const existingBySession = findPlayerBySessionId(room, sessionPlayerId);
+  if (existingBySession) {
+    reattachPlayerSocket(room, existingBySession, socket);
+    room.message = `${existingBySession.name} volvió a la sala.`;
+    broadcastRoom(room);
+    return { ok: true, reconnected: true };
+  }
+
+  if (room.players.length >= MAX_PLAYERS)
+    return { error: 'La sala está llena.' };
+  if (room.phase !== 'lobby') return { error: 'La partida ya comenzó.' };
+  if (room.players.some((p) => normalize(p.name) === normalize(playerName))) {
+    return { error: 'Ese nombre ya está en uso.' };
+  }
+
+  const player = createPlayer(socket, playerName, sessionPlayerId);
+  room.players.push(player);
+  socket.join(code);
+  broadcastRoom(room);
+  return { ok: true };
+}
+```
+
+Con esto, si el jugador refresca o pierde conexión y vuelve a entrar con el mismo `sessionPlayerId`, recupera su lugar.
+
+---
+
+## 85) Ajuste del `disconnect`
+
+No conviene borrar instantáneamente al jugador si queremos soportar reconexión breve.
+
+### Reemplazá la lógica principal de `disconnect` por este enfoque:
+
+```js
+socket.on('disconnect', () => {
+  for (const [code, room] of rooms.entries()) {
+    const player = room.players.find((p) => p.id === socket.id);
+    if (!player) continue;
+
+    markPlayerDisconnected(room, player);
+    room.message = `${player.name} se desconectó.`;
+
+    setTimeout(() => {
+      const stillThere = room.players.find(
+        (p) => p.sessionPlayerId === player.sessionPlayerId
+      );
+      if (!stillThere || stillThere.connected) return;
+
+      const activePlayer = stillThere;
+      const oldSocketId = activePlayer.id;
+
+      room.players = room.players.filter(
+        (p) => p.sessionPlayerId !== activePlayer.sessionPlayerId
+      );
+
+      if (!room.players.length) {
+        clearExistingTimer(room);
+        rooms.delete(code);
+        return;
+      }
+
+      if (room.hostId === oldSocketId) {
+        room.hostId = room.players[0].id;
+      }
+      room.players.forEach((p) => {
+        p.isHost = p.id === room.hostId;
+      });
+
+      room.turnOrder = room.turnOrder.filter((id) => id !== oldSocketId);
+      room.voteOrder = room.voteOrder.filter((id) => id !== oldSocketId);
+      delete room.revealedClues[oldSocketId];
+      delete room.revealedVotes[oldSocketId];
+
+      room.message = `${activePlayer.name} salió definitivamente de la sala.`;
+
+      if (room.phase !== 'lobby' && activePlayer.alive) {
+        room.commentatorMessage =
+          'Hubo una baja definitiva durante la partida.';
+
+        if (room.phase === 'clue' && currentCluePlayer(room) === oldSocketId) {
+          advanceClueTurn(room);
+          return;
+        }
+
+        if (room.phase === 'vote' && currentVotePlayer(room) === oldSocketId) {
+          if (room.currentVoteIndex >= room.voteOrder.length) {
+            resolveVoting(room);
+          } else {
+            broadcastRoom(room);
+          }
+          return;
+        }
+
+        if (checkVictory(room)) {
+          broadcastRoom(room);
+          return;
+        }
+      }
+
+      broadcastRoom(room);
+    }, 12000);
+
+    broadcastRoom(room);
+    return;
+  }
+});
+```
+
+### Qué hace esto
+
+- al desconectarse, el jugador **no desaparece de inmediato**
+- se marca como desconectado
+- tiene **12 segundos** para volver
+- si no vuelve, recién ahí se lo elimina de verdad
+
+Eso es muchísimo mejor para partidas reales.
+
+---
+
+## 86) Exponer estado de conexión al cliente
+
+Dentro de `publicRoomState`, agregá `connected`:
+
+```js
+players: room.players.map(p => ({
+  id: p.id,
+  sessionPlayerId: p.sessionPlayerId,
+  name: p.name,
+  alive: p.alive,
+  connected: p.connected,
+  isHost: p.isHost,
+  clue: room.revealedClues[p.id] || '',
+  vote: room.revealedVotes[p.id] || null
+})),
+```
+
+---
+
+## 87) Cliente — generar `sessionPlayerId`
+
+En `public/app.js`, agregá arriba de todo:
+
+```js
+function getOrCreateSessionPlayerId() {
+  const key = 'impostor_futbolistas_session_id';
+  let value = localStorage.getItem(key);
+  if (!value) {
+    value = `p_${Math.random().toString(36).slice(2)}_${Date.now()}`;
+    localStorage.setItem(key, value);
+  }
+  return value;
+}
+
+const sessionPlayerId = getOrCreateSessionPlayerId();
+```
+
+---
+
+## 88) Cliente — mandar `sessionPlayerId` al crear/unirse
+
+### Reemplazá el `onclick` de crear sala por:
+
+```js
+$('#createRoomBtn').onclick = () => {
+  const name = $('#playerName').value.trim();
+  if (!name) return;
+  localStorage.setItem('impostor_player_name', name);
+  socket.emit('room:create', { name, sessionPlayerId });
+};
+```
+
+### Reemplazá el `onclick` de unirse por:
+
+```js
+$('#joinRoomBtn').onclick = () => {
+  const name = $('#playerName').value.trim();
+  const code = $('#joinCode').value.trim().toUpperCase();
+  if (!name || !code) return;
+  localStorage.setItem('impostor_player_name', name);
+  localStorage.setItem('impostor_room_code', code);
+  socket.emit('room:join', { code, name, sessionPlayerId });
+};
+```
+
+---
+
+## 89) Cliente — autointento de reconexión
+
+Agregá esto dentro de `socket.on('connect', ...)`:
+
+```js
+socket.on('connect', () => {
+  state.myId = socket.id;
+
+  const savedName = localStorage.getItem('impostor_player_name');
+  const savedCode = localStorage.getItem('impostor_room_code');
+
+  if (!state.room && savedName && savedCode) {
+    socket.emit('room:join', {
+      code: savedCode,
+      name: savedName,
+      sessionPlayerId,
+    });
+  }
+});
+```
+
+Con eso, si refrescás la pestaña, el cliente intenta volver automáticamente a la sala.
+
+---
+
+## 90) Cliente — reflejar desconectados
+
+Reemplazá la parte principal de `renderPlayers()` por esta línea de estado:
+
+```js
+const statusIcon = player.connected ? (player.alive ? '🟢' : '⚪') : '🟠';
+```
+
+Y en el HTML del jugador usá:
+
+```js
+<span>
+  ${statusIcon} ${marker}
+</span>
+```
+
+Interpretación:
+
+- 🟢 vivo y conectado
+- ⚪ eliminado
+- 🟠 desconectado temporalmente
+
+---
+
+## 91) Mini parche visual en `styles.css`
+
+Agregá al final:
+
+```css
+.player.disconnected {
+  opacity: 0.72;
+  border-style: dashed;
+}
+```
+
+Y en `renderPlayers()` podés sumar la clase:
+
+```js
+const disconnectedClass = player.connected ? '' : 'disconnected';
+div.className = `player ${player.alive ? '' : 'dead'} ${isClueTurn || isVoteTurn ? 'active-turn' : ''} ${disconnectedClass}`;
+```
+
+---
+
+## 92) Qué logra esta fase de robustez
+
+Con esta mejora, el juego ya soporta bastante mejor el caso real más molesto:
+
+- alguien refresca
+- alguien pierde conexión unos segundos
+- alguien vuelve a entrar a la misma sala
+
+Y en vez de romper la partida, el sistema intenta **reconstruir la identidad del jugador**.
+
+Eso aumenta muchísimo el valor del MVP.
+
+---
+
+## 93) Limitaciones honestas de esta robustez
+
+Esto mejora mucho, pero no resuelve todo:
+
+- no es autenticación real
+- si dos personas comparten el mismo navegador/perfil, el `localStorage` puede mezclarse
+- si el usuario borra storage, pierde su identidad de sesión
+- si cierra demasiado tiempo, la sala puede haber avanzado o eliminado su slot
+
+Para un MVP local/multijugador casual, sigue siendo una solución muy razonable.
+
+---
+
+## 94) Test manual recomendado para esta fase
+
+### Caso 1 — refresh simple
+
+- entrar a una sala
+- refrescar la pestaña
+- comprobar que el jugador vuelva a entrar solo
+
+### Caso 2 — refresh del host
+
+- hacer que el host refresque
+- comprobar que siga siendo host al volver
+
+### Caso 3 — desconexión breve
+
+- cerrar la pestaña y volver antes de 12 segundos
+- comprobar que recupera su lugar
+
+### Caso 4 — desconexión larga
+
+- cerrar la pestaña y esperar más de 12 segundos
+- comprobar que el jugador se elimina definitivamente
+
+### Caso 5 — desconexión en turno
+
+- refrescar cuando te toca pista o voto
+- comprobar que la sala no queda trabada
+
+---
+
+## 95) Próximo paso después de robustez
+
+Una vez aplicada esta fase, ya cambia bastante el estado del proyecto.
+
+A partir de ahí, lo más razonable sería una de estas dos rutas:
+
+### Ruta 1 — limpieza estructural
+
+- separar `server.js` en módulos
+- mover futbolistas a archivo aparte
+- mover helpers de salas y fases a utilidades
+
+### Ruta 2 — pulido de experiencia
+
+- pantalla de resultados de ronda más linda
+- HUD más claro
+- feedback más fuerte de “te toca”
+- mejor ambientación visual tipo stream
+
+Con esta robustez implementada, cualquiera de las dos rutas ya sería válida. Pero técnicamente, **modularizar primero** suele ser mejor si el proyecto va a seguir creciendo.
+impostor-futbolero
+│
+├ package.json
+├ server.js
+│
+├ public
+│ ├ index.html
+│ ├ styles.css
+│ └ app.js
+│
+└ src
+├ core
+│ ├ ids.js
+│ ├ normalize.js
+│ └ commentator.js
+│
+├ data
+│ └ footballers.js
+│
+└ game
+├ roomFactory.js
+├ roomState.js
+├ roleManager.js
+├ clueRules.js
+├ voteManager.js
+└ victory.js
+
+---
+
+# 6. Jugadores
+
+Mínimo de jugadores:
+
+5
+
+Máximo de jugadores:
+
+12 o 15
+
+Todos los jugadores son humanos.
+
+---
+
+# 7. Roles
+
+Existen dos roles.
+
+## Inocentes
+
+Conocen el futbolista secreto.
+
+## Impostor
+
+No conoce el futbolista.
+
+Debe deducirlo observando las pistas de los demás.
+
+---
+
+# 8. Selección de Futbolista
+
+El servidor selecciona un futbolista aleatorio.
+
+Debe existir una base de datos con aproximadamente **200 futbolistas**.
+
+Formato sugerido:
+
+---
+
+# 6. Jugadores
+
+Mínimo de jugadores:
+
+5
+
+Máximo de jugadores:
+
+12 o 15
+
+Todos los jugadores son humanos.
+
+---
+
+# 7. Roles
+
+Existen dos roles.
+
+## Inocentes
+
+Conocen el futbolista secreto.
+
+## Impostor
+
+No conoce el futbolista.
+
+Debe deducirlo observando las pistas de los demás.
+
+---
+
+# 8. Selección de Futbolista
+
+El servidor selecciona un futbolista aleatorio.
+
+Debe existir una base de datos con aproximadamente **200 futbolistas**.
+
+Formato sugerido:
+{
+name: "Lionel Messi",
+difficulty: "casual"
+}
+
+---
+
+# 9. Dificultades
+
+El juego tendrá tres niveles.
+
+## Casual
+
+Futbolistas muy conocidos.
+
+Ejemplos:
+
+- Messi
+- Cristiano Ronaldo
+- Neymar
+- Mbappé
+
+---
+
+## Futbolero
+
+Jugadores conocidos por aficionados al fútbol.
+
+Ejemplos:
+
+- Barella
+- Frimpong
+- Rodrygo
+
+---
+
+## Hardcore
+
+Jugadores menos conocidos pero actuales.
+
+Ejemplo:
+
+- titulares de equipos medianos
+- ligas menores
+
+No usar jugadores extremadamente antiguos.
+
+---
+
+# 10. Flujo de la Partida
+
+Una partida se divide en rondas.
+
+Cada ronda tiene fases.
+
+---
+
+# 11. Lobby
+
+Los jugadores entran a una sala.
+
+Un jugador es el **host**.
+
+El host puede configurar:
+
+- dificultad
+- número de impostores
+- número máximo de rondas
+- tiempos
+
+---
+
+# 12. Reparto de Roles
+
+El servidor asigna roles aleatoriamente.
+
+Los inocentes reciben:
+
+nombre del futbolista.
+
+Los impostores reciben:
+
+"Impostor".
+
+---
+
+# 13. Fase de Pistas
+
+Cada jugador debe dar una pista.
+
+Reglas:
+
+- máximo 30 caracteres
+- no decir el nombre del futbolista
+- obligatorio dar pista
+- orden rotativo entre rondas
+- cada jugador tiene 30 segundos
+
+Si alguien repite pista, genera sospecha.
+
+---
+
+# 14. Debate
+
+Duración aproximada:
+
+60 segundos.
+
+Los jugadores discuten quién podría ser el impostor.
+
+---
+
+# 15. Votación
+
+Los jugadores votan uno por uno.
+
+Orden de votación definido por el servidor.
+
+Si hay empate:
+
+se repite la votación.
+
+---
+
+# 16. Reveal
+
+Se revela:
+
+- jugador eliminado
+- si era impostor o inocente
+
+---
+
+# 17. Condiciones de Victoria
+
+## Inocentes ganan
+
+Si eliminan a todos los impostores.
+
+---
+
+## Impostores ganan
+
+Si el número de impostores es igual o mayor que los inocentes.
+
+Ejemplo:
+
+2 impostores  
+2 inocentes
+
+→ impostores ganan.
+
+---
+
+# 18. Chat de Eliminados
+
+Jugadores eliminados pueden hablar entre ellos.
+
+No pueden interactuar con jugadores vivos.
+
+---
+
+# 19. Reconexión
+
+El sistema debe permitir que un jugador se reconecte si refresca la página.
+
+Usar un identificador persistente.
+
+---
+
+# 20. Seguridad
+
+El servidor debe validar:
+
+- pistas
+- votos
+- roles
+
+Nunca confiar en el cliente.
+
+---
+
+# 21. Experiencia Visual
+
+El juego debe tener una interfaz clara.
+
+Elementos necesarios:
+
+- lista de jugadores
+- indicador de turno
+- temporizador
+- área de pistas
+- área de votación
+- mensajes del sistema
+
+---
+
+# 22. Comentarista
+
+El juego tendrá mensajes estilo stream.
+
+Ejemplos:
+
+- "Se viene una pista que puede delatar."
+- "Ojo con repetir."
+- "Empieza el debate."
+- "Llegó la hora de votar."
+
+---
+
+# 23. Requisitos de Código
+
+El código debe ser:
+
+- fácil de entender
+- modular
+- comentado
+- apto para juniors
+
+Evitar funciones extremadamente largas.
+
+---
+
+# 24. Entrega Esperada
+
+El agente debe entregar:
+
+- proyecto completo
+- código funcional
+- estructura clara
+- instrucciones de ejecución
+
+---
+
+# 25. Instrucciones de Ejecución
+
+El proyecto debe poder ejecutarse con:
+
+---
+
+# 9. Dificultades
+
+El juego tendrá tres niveles.
+
+## Casual
+
+Futbolistas muy conocidos.
+
+Ejemplos:
+
+- Messi
+- Cristiano Ronaldo
+- Neymar
+- Mbappé
+
+---
+
+## Futbolero
+
+Jugadores conocidos por aficionados al fútbol.
+
+Ejemplos:
+
+- Barella
+- Frimpong
+- Rodrygo
+
+---
+
+## Hardcore
+
+Jugadores menos conocidos pero actuales.
+
+Ejemplo:
+
+- titulares de equipos medianos
+- ligas menores
+
+No usar jugadores extremadamente antiguos.
+
+---
+
+# 10. Flujo de la Partida
+
+Una partida se divide en rondas.
+
+Cada ronda tiene fases.
+
+---
+
+# 11. Lobby
+
+Los jugadores entran a una sala.
+
+Un jugador es el **host**.
+
+El host puede configurar:
+
+- dificultad
+- número de impostores
+- número máximo de rondas
+- tiempos
+
+---
+
+# 12. Reparto de Roles
+
+El servidor asigna roles aleatoriamente.
+
+Los inocentes reciben:
+
+nombre del futbolista.
+
+Los impostores reciben:
+
+"Impostor".
+
+---
+
+# 13. Fase de Pistas
+
+Cada jugador debe dar una pista.
+
+Reglas:
+
+- máximo 30 caracteres
+- no decir el nombre del futbolista
+- obligatorio dar pista
+- orden rotativo entre rondas
+- cada jugador tiene 30 segundos
+
+Si alguien repite pista, genera sospecha.
+
+---
+
+# 14. Debate
+
+Duración aproximada:
+
+60 segundos.
+
+Los jugadores discuten quién podría ser el impostor.
+
+---
+
+# 15. Votación
+
+Los jugadores votan uno por uno.
+
+Orden de votación definido por el servidor.
+
+Si hay empate:
+
+se repite la votación.
+
+---
+
+# 16. Reveal
+
+Se revela:
+
+- jugador eliminado
+- si era impostor o inocente
+
+---
+
+# 17. Condiciones de Victoria
+
+## Inocentes ganan
+
+Si eliminan a todos los impostores.
+
+---
+
+## Impostores ganan
+
+Si el número de impostores es igual o mayor que los inocentes.
+
+Ejemplo:
+
+2 impostores  
+2 inocentes
+
+→ impostores ganan.
+
+---
+
+# 18. Chat de Eliminados
+
+Jugadores eliminados pueden hablar entre ellos.
+
+No pueden interactuar con jugadores vivos.
+
+---
+
+# 19. Reconexión
+
+El sistema debe permitir que un jugador se reconecte si refresca la página.
+
+Usar un identificador persistente.
+
+---
+
+# 20. Seguridad
+
+El servidor debe validar:
+
+- pistas
+- votos
+- roles
+
+Nunca confiar en el cliente.
+
+---
+
+# 21. Experiencia Visual
+
+El juego debe tener una interfaz clara.
+
+Elementos necesarios:
+
+- lista de jugadores
+- indicador de turno
+- temporizador
+- área de pistas
+- área de votación
+- mensajes del sistema
+
+---
+
+# 22. Comentarista
+
+El juego tendrá mensajes estilo stream.
+
+Ejemplos:
+
+- "Se viene una pista que puede delatar."
+- "Ojo con repetir."
+- "Empieza el debate."
+- "Llegó la hora de votar."
+
+---
+
+# 23. Requisitos de Código
+
+El código debe ser:
+
+- fácil de entender
+- modular
+- comentado
+- apto para juniors
+
+Evitar funciones extremadamente largas.
+
+---
+
+# 24. Entrega Esperada
+
+El agente debe entregar:
+
+- proyecto completo
+- código funcional
+- estructura clara
+- instrucciones de ejecución
+
+---
+
+# 25. Instrucciones de Ejecución
+
+El proyecto debe poder ejecutarse con:
+
+---
+
+# 9. Dificultades
+
+El juego tendrá tres niveles.
+
+## Casual
+
+Futbolistas muy conocidos.
+
+Ejemplos:
+
+- Messi
+- Cristiano Ronaldo
+- Neymar
+- Mbappé
+
+---
+
+## Futbolero
+
+Jugadores conocidos por aficionados al fútbol.
+
+Ejemplos:
+
+- Barella
+- Frimpong
+- Rodrygo
+
+---
+
+## Hardcore
+
+Jugadores menos conocidos pero actuales.
+
+Ejemplo:
+
+- titulares de equipos medianos
+- ligas menores
+
+No usar jugadores extremadamente antiguos.
+
+---
+
+# 10. Flujo de la Partida
+
+Una partida se divide en rondas.
+
+Cada ronda tiene fases.
+
+---
+
+# 11. Lobby
+
+Los jugadores entran a una sala.
+
+Un jugador es el **host**.
+
+El host puede configurar:
+
+- dificultad
+- número de impostores
+- número máximo de rondas
+- tiempos
+
+---
+
+# 12. Reparto de Roles
+
+El servidor asigna roles aleatoriamente.
+
+Los inocentes reciben:
+
+nombre del futbolista.
+
+Los impostores reciben:
+
+"Impostor".
+
+---
+
+# 13. Fase de Pistas
+
+Cada jugador debe dar una pista.
+
+Reglas:
+
+- máximo 30 caracteres
+- no decir el nombre del futbolista
+- obligatorio dar pista
+- orden rotativo entre rondas
+- cada jugador tiene 30 segundos
+
+Si alguien repite pista, genera sospecha.
+
+---
+
+# 14. Debate
+
+Duración aproximada:
+
+60 segundos.
+
+Los jugadores discuten quién podría ser el impostor.
+
+---
+
+# 15. Votación
+
+Los jugadores votan uno por uno.
+
+Orden de votación definido por el servidor.
+
+Si hay empate:
+
+se repite la votación.
+
+---
+
+# 16. Reveal
+
+Se revela:
+
+- jugador eliminado
+- si era impostor o inocente
+
+---
+
+# 17. Condiciones de Victoria
+
+## Inocentes ganan
+
+Si eliminan a todos los impostores.
+
+---
+
+## Impostores ganan
+
+Si el número de impostores es igual o mayor que los inocentes.
+
+Ejemplo:
+
+2 impostores  
+2 inocentes
+
+→ impostores ganan.
+
+---
+
+# 18. Chat de Eliminados
+
+Jugadores eliminados pueden hablar entre ellos.
+
+No pueden interactuar con jugadores vivos.
+
+---
+
+# 19. Reconexión
+
+El sistema debe permitir que un jugador se reconecte si refresca la página.
+
+Usar un identificador persistente.
+
+---
+
+# 20. Seguridad
+
+El servidor debe validar:
+
+- pistas
+- votos
+- roles
+
+Nunca confiar en el cliente.
+
+---
+
+# 21. Experiencia Visual
+
+El juego debe tener una interfaz clara.
+
+Elementos necesarios:
+
+- lista de jugadores
+- indicador de turno
+- temporizador
+- área de pistas
+- área de votación
+- mensajes del sistema
+
+---
+
+# 22. Comentarista
+
+El juego tendrá mensajes estilo stream.
+
+Ejemplos:
+
+- "Se viene una pista que puede delatar."
+- "Ojo con repetir."
+- "Empieza el debate."
+- "Llegó la hora de votar."
+
+---
+
+# 23. Requisitos de Código
+
+El código debe ser:
+
+- fácil de entender
+- modular
+- comentado
+- apto para juniors
+
+Evitar funciones extremadamente largas.
+
+---
+
+# 24. Entrega Esperada
+
+El agente debe entregar:
+
+- proyecto completo
+- código funcional
+- estructura clara
+- instrucciones de ejecución
+
+---
+
+# 25. Instrucciones de Ejecución
+
+El proyecto debe poder ejecutarse con:
+npm install
+npm start
+
+Luego abrir en navegador:
+http://localhost:3000
+
+---
+
+# 26. Objetivo Final
+
+Construir un videojuego web multijugador:
+
+- funcional
+- jugable
+- claro
+- ampliable
+- mantenible
+
+Debe servir como base para futuras mejoras.
